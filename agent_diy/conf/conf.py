@@ -31,6 +31,7 @@ class StageConfig:
     # 阶段标识 ---
     name = ""
     task_type = "standard"
+    num_goal_obs = 0
 
     # --- Model architecture dimensions (Isaac Lab Unitree-Go2-Velocity constants)
     # These are fixed by the Isaac Lab task definition and the network structure;
@@ -44,10 +45,14 @@ class StageConfig:
 
     # --- Model architecture
     # 模型架构 ---
-    model_class = "ActorCritic"
-    actor_hidden_dims = [512, 256, 128]
-    critic_hidden_dims = [512, 256, 128]
-    activation = "elu"
+    model_class = "EnhancedActorCritic"
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
+    activation = "selu"
+    use_residual = True
+    use_layernorm_per_layer = True
+    obs_normalization = True
+    reward_normalization = True
 
     # --- Training hyperparameters
     # 训练超参数 ---
@@ -89,7 +94,25 @@ class CustomConfig(StageConfig):
     # 新增训练阶段后，需在同目录创建对应训练配置文件。
     # 文件命名规则：train_env_conf_<task_type>_<stage.name>.toml
     # 可参考 train_env_conf_standard_locomotion.toml。
-    pass
+    name = "custom_stage"
+    task_type = "standard"
+
+    # User-defined model architecture
+    # 用户自定义模型架构
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
+    activation = "selu"
+    use_residual = True
+    use_layernorm_per_layer = True
+    obs_normalization = True
+    reward_normalization = True
+
+    # User-defined training hyperparameters
+    # 用户自定义训练超参数
+    lr = 3e-4
+    num_learning_epochs = 5
+    num_mini_batches = 4
+    num_steps_per_env = 48
 
 
 class LocomotionConfig(StageConfig):
@@ -100,6 +123,83 @@ class LocomotionConfig(StageConfig):
 
     name = "locomotion"
     task_type = "standard"
+
+
+class EnhancedLocomotionConfig(StageConfig):
+    """
+    Enhanced stage: locomotion with improved network architecture.
+    增强阶段：使用改进网络架构的locomotion。
+    """
+
+    name = "locomotion"
+    task_type = "standard"
+
+    # --- Enhanced Model architecture
+    # 增强模型架构 ---
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
+    activation = "selu"
+    use_residual = True
+    use_layernorm_per_layer = True
+    obs_normalization = True
+    reward_normalization = True
+
+
+class TrackConfig(StageConfig):
+    """
+    Stage: track navigation — learn obstacle avoidance and navigation on track terrain.
+    阶段：track导航 —— 在赛道地形上学障碍规避和导航。
+    """
+
+    name = "nav"
+    task_type = "track"
+    num_goal_obs = 4
+
+    # --- Enhanced Model architecture for track navigation
+    # 适用于赛道导航的增强模型架构 ---
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
+    activation = "selu"
+    use_residual = True
+    use_layernorm_per_layer = True
+    obs_normalization = True
+    reward_normalization = True
+
+    # --- Training hyperparameters for track mode
+    # 赛道模式训练超参数 ---
+    lr = 1e-4  # Lower learning rate for navigation tasks
+    num_learning_epochs = 5
+    num_mini_batches = 4
+    num_steps_per_env = 48
+    min_normalized_std = [0.05, 0.02, 0.05] * 4
+
+
+class HierarchicalConfig(StageConfig):
+    """
+    Stage: hierarchical training — combined locomotion and navigation training.
+    阶段：分层训练 —— 结合运动控制和导航训练。
+    """
+
+    name = "hier_nav"
+    task_type = "track"
+
+    # --- Enhanced Model architecture for hierarchical training
+    # 适用于分层训练的增强模型架构 ---
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
+    activation = "selu"
+    use_residual = True
+    use_layernorm_per_layer = True
+    obs_normalization = True
+    reward_normalization = True
+
+    # --- Training hyperparameters for hierarchical mode
+    # 分层模式训练超参数 ---
+    lr = 1e-4  # Lower learning rate for complex tasks
+    num_learning_epochs = 5
+    num_mini_batches = 4
+    num_steps_per_env = 48
+    min_normalized_std = [0.05, 0.02, 0.05] * 4
 
 
 class Config:
@@ -116,7 +216,11 @@ class Config:
 
     # Switch stage by changing CURRENT
     # 通过修改 CURRENT 切换阶段
-    CURRENT = LocomotionConfig
+    # CURRENT = LocomotionConfig          # 基线 locomotion 配置（standard 模式）
+    CURRENT = EnhancedLocomotionConfig   # 增强 locomotion 配置（standard 模式）
+    # CURRENT = TrackConfig               # track 导航配置（track 模式）
+    # CURRENT = HierarchicalConfig        # 分层训练配置（track 模式）
+    # CURRENT = CustomConfig              # 用户自定义配置
 
     @staticmethod
     def load_conf(logger):

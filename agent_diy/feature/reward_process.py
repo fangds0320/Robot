@@ -301,3 +301,255 @@ class RewardProcess(RewardProcessBase):
             failure = failure & ~goal_done
 
         return failure.float()
+
+    # -----------------------------------------------------------------------
+    # Enhanced 8 reward functions aligned with scoring system
+    # 增强的8个奖励函数，与评分系统对齐
+    # -----------------------------------------------------------------------
+
+    def _reward_forward_distance(self, scale: float = 1.0):
+        """
+        Reward for forward movement aligned with forward_score in scoring system.
+        前进距离奖励，与评分系统中的forward_score对齐。
+
+        Args:
+            scale: Scaling factor for reward
+            scale: 奖励缩放因子
+        """
+        asset = self._get_robot_asset()
+        # Forward velocity in body frame (x方向为前进方向)
+        forward_vel = asset.data.root_lin_vel_b[:, 0]
+        return forward_vel * scale
+
+    def _reward_time_efficiency(self, time_penalty: float = 0.01):
+        """
+        Time efficiency reward aligned with time_score in scoring system.
+        时间效率奖励，与评分系统中的time_score对齐。
+
+        Args:
+            time_penalty: Per-step penalty to encourage fast completion
+            time_penalty: 每步惩罚，鼓励快速完成
+        """
+        # Constant penalty per step
+        # 每步固定惩罚
+        return torch.full((self.env.num_envs,), -time_penalty, device=self.env.device)
+
+    def _reward_energy_efficiency(self, power_scale: float = 1.0):
+        """
+        Energy efficiency reward aligned with energy_score in scoring system.
+        能量效率奖励，与评分系统中的energy_score对齐。
+
+        Args:
+            power_scale: Scaling factor for power calculation
+            power_scale: 功率计算的缩放因子
+        """
+        asset = self._get_robot_asset()
+        # Compute mechanical power: torque * velocity
+        # 计算机械功率：扭矩 × 速度
+        power = torch.sum(torch.abs(asset.data.joint_torque * asset.data.joint_vel), dim=1)
+        # Exponential decay of power (lower power = higher reward)
+        # 功率的指数衰减（功率越低奖励越高）
+        energy_reward = torch.exp(-power * power_scale)
+        return energy_reward
+
+    def _reward_pose_stability(self, orientation_scale: float = 10.0):
+        """
+        Pose stability reward aligned with pose_score in scoring system.
+        姿态稳定性奖励，与评分系统中的pose_score对齐。
+
+        Args:
+            orientation_scale: Scaling factor for orientation penalty
+            orientation_scale: 朝向惩罚的缩放因子
+        """
+        asset = self._get_robot_asset()
+        # Penalize roll and pitch deviations from upright
+        # 惩罚滚转和俯仰偏离直立姿态
+        projected_gravity = asset.data.projected_gravity_b
+        roll_pitch_error = torch.sum(torch.square(projected_gravity[:, :2]), dim=1)
+        # Exponential decay of orientation error
+        # 朝向误差的指数衰减
+        pose_reward = torch.exp(-roll_pitch_error * orientation_scale)
+        return pose_reward
+
+    def _reward_joint_acceleration_penalty(self, scale: float = 0.1):
+        """
+        Penalize joint acceleration to encourage smooth movements.
+        惩罚关节加速度，鼓励平滑运动。
+
+        Args:
+            scale: Scaling factor for acceleration penalty
+            scale: 加速度惩罚的缩放因子
+        """
+        asset = self._get_robot_asset()
+        if hasattr(asset.data, 'joint_acc'):
+            # Penalize squared joint acceleration
+            # 惩罚平方关节加速度
+            acc_penalty = torch.sum(torch.square(asset.data.joint_acc), dim=1)
+        else:
+            # Estimate acceleration from velocity changes
+            # 从速度变化估计加速度
+            acc_penalty = torch.zeros(self.env.num_envs, device=self.env.device)
+        return -acc_penalty * scale
+
+    def _reward_action_smoothness(self, scale: float = 0.01):
+        """
+        Penalize large changes in actions to encourage smooth control.
+        惩罚动作的大幅变化，鼓励平滑控制。
+
+        Args:
+            scale: Scaling factor for action change penalty
+            scale: 动作变化惩罚的缩放因子
+        """
+        asset = self._get_robot_asset()
+        if hasattr(self.env, 'last_actions'):
+            # Compute action difference
+            # 计算动作差异
+            action_diff = torch.norm(asset.data.joint_pos_target - self.env.last_actions, dim=1)
+            # Penalize large changes
+            # 惩罚大幅变化
+            smoothness_penalty = torch.square(action_diff)
+        else:
+            smoothness_penalty = torch.zeros(self.env.num_envs, device=self.env.device)
+        return -smoothness_penalty * scale
+
+    def _reward_foot_slip_penalty(self, scale: float = 1.0):
+        """
+        Penalize foot slipping on the ground.
+        惩罚足部在地面上滑动。
+
+        Args:
+            scale: Scaling factor for slip penalty
+            scale: 滑动惩罚的缩放因子
+        """
+        sensor_cfg = self._get_foot_sensor_cfg()
+        asset_cfg = self._get_foot_asset_cfg()
+
+        contact_sensor = self.env.scene.sensors[sensor_cfg.name]
+        asset = self.env.scene[asset_cfg.name]
+
+        # Check which feet are in contact
+        # 检查哪些脚在接触地面
+        contacts = (
+            contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+        )
+
+        # Get foot velocities (xy only)
+        # 获取脚部速度（仅xy分量）
+        body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
+
+        # Penalize velocity when in contact
+        # 接触时惩罚速度
+        slip_penalty = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
+        return -slip_penalty * scale
+
+    def _reward_obstacle_avoidance_bonus(self, clearance_threshold: float = 0.5, scale: float = 1.0):
+        """
+        Reward for maintaining safe distance from obstacles.
+        与障碍物保持安全距离的奖励。
+
+        Args:
+            clearance_threshold: Safe distance threshold
+            clearance_threshold: 安全距离阈值
+            scale: Scaling factor for bonus
+            scale: 奖励的缩放因子
+        """
+        sensor = self.env.scene.sensors["height_scanner"]
+
+        # raw height: base_z - hit_z (positive=ground below, negative=obstacle above)
+        # 原始高度：base_z - hit_z（正值=下方为地面，负值=上方有障碍）
+        scan = sensor.data.pos_w[:, 2:3] - sensor.data.ray_hits_w[..., 2]
+
+        # Reshape to grid
+        # 重塑为网格
+        grid = scan.view(self.env.num_envs, 16, 16)
+
+        # Check for obstacles close to robot
+        # 检查靠近机器人的障碍物
+        near_grid = grid[:, :, :8]  # First 8 columns (0-0.8m ahead)
+
+        # Find minimum distance (most negative value = highest obstacle)
+        # 查找最小距离（最负的值 = 最高的障碍物）
+        min_height = torch.min(near_grid, dim=(1, 2))[0]
+
+        # Reward for clearance (more clearance = higher reward)
+        # 奖励空隙（空隙越大奖励越高）
+        clearance_bonus = torch.clamp(clearance_threshold + min_height, min=0.0, max=clearance_threshold)
+        return clearance_bonus * scale
+
+    # Combined score-aligned reward for Standard Mode
+    def _reward_standard_score_aligned(self):
+        """
+        Combined reward aligned with Standard Mode scoring system:
+        total_score = 0.4 × forward_score + 0.2 × time_score + 0.2 × energy_score + 0.2 × pose_score
+
+        与标准模式评分系统对齐的组合奖励
+        """
+        forward_reward = self._reward_forward_distance(scale=2.0)
+        time_reward = self._reward_time_efficiency(time_penalty=0.005)
+        energy_reward = self._reward_energy_efficiency(power_scale=0.1)
+        pose_reward = self._reward_pose_stability(orientation_scale=5.0)
+
+        # Weighted combination
+        # 加权组合
+        total_reward = (
+            0.4 * forward_reward +
+            0.2 * time_reward +
+            0.2 * energy_reward +
+            0.2 * pose_reward
+        )
+
+        # Add auxiliary rewards with smaller weights
+        # 添加辅助奖励，权重较小
+        acc_reward = self._reward_joint_acceleration_penalty(scale=0.01)
+        smooth_reward = self._reward_action_smoothness(scale=0.001)
+        slip_reward = self._reward_foot_slip_penalty(scale=0.1)
+        avoidance_reward = self._reward_obstacle_avoidance_bonus(clearance_threshold=0.3, scale=0.5)
+
+        total_reward += 0.05 * (acc_reward + smooth_reward + slip_reward + avoidance_reward)
+
+        return total_reward
+
+    # Combined score-aligned reward for Track Mode
+    def _reward_track_score_aligned(self, completion_factor=1.0):
+        """
+        Combined reward aligned with Track Mode scoring system:
+        total_score = completion_factor × (0.4 × time_score + 0.4 × pose_score + 0.2 × energy_score)
+
+        与Track模式评分系统对齐的组合奖励
+        """
+        time_reward = self._reward_time_efficiency(time_penalty=0.01)
+        pose_reward = self._reward_pose_stability(orientation_scale=10.0)
+        energy_reward = self._reward_energy_efficiency(power_scale=0.2)
+
+        # Base combination
+        # 基础组合
+        base_reward = (
+            0.4 * time_reward +
+            0.4 * pose_reward +
+            0.2 * energy_reward
+        )
+
+        # Apply completion factor (depends on task progress)
+        # 应用完成因子（取决于任务进度）
+        if hasattr(self.env, 'goal_positions') and self.env.goal_positions is not None:
+            robot = self._get_robot_asset()
+            robot_pos = robot.data.root_pos_w[:, :2]
+            goal_pos = self.env.goal_positions[:, :2]
+            distance = torch.norm(goal_pos - robot_pos, dim=1)
+
+            # Simple progress estimation based on distance
+            # 基于距离的简单进度估计
+            max_distance = 10.0  # Assume maximum distance
+            progress = 1.0 - torch.clamp(distance / max_distance, 0.0, 1.0)
+            completion_factor = progress
+
+        total_reward = completion_factor * base_reward
+
+        # Add navigation-specific rewards
+        # 添加导航特定的奖励
+        forward_reward = self._reward_forward_distance(scale=1.0)
+        avoidance_reward = self._reward_obstacle_avoidance_bonus(clearance_threshold=0.4, scale=1.0)
+
+        total_reward += 0.2 * (forward_reward + avoidance_reward)
+
+        return total_reward
