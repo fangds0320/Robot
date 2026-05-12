@@ -93,26 +93,6 @@ def build_monitor():
             .add_metric(metrics_name="reward_track_lin_vel_xy",
                         expr="avg(reward_track_lin_vel_xy{})")
             .end_panel()
-        .add_panel(name="脚部碰撞惩罚", name_en="reward_feet_stumble", type="line")
-            .add_metric(metrics_name="reward_feet_stumble",
-                        expr="avg(reward_feet_stumble{})")
-            .end_panel()
-        .add_panel(name="足部打滑惩罚", name_en="reward_feet_slide", type="line")
-            .add_metric(metrics_name="reward_feet_slide",
-                        expr="avg(reward_feet_slide{})")
-            .end_panel()
-        .add_panel(name="避障惩罚", name_en="reward_obstacle_evasion", type="line")
-            .add_metric(metrics_name="reward_obstacle_evasion",
-                        expr="avg(reward_obstacle_evasion{})")
-            .end_panel()
-        .add_panel(name="终止惩罚", name_en="reward_termination", type="line")
-            .add_metric(metrics_name="reward_termination",
-                        expr="avg(reward_termination{})")
-            .end_panel()
-        .add_panel(name="姿态稳定性", name_en="reward_flat_orientation", type="line")
-            .add_metric(metrics_name="reward_flat_orientation",
-                        expr="avg(reward_flat_orientation{})")
-            .end_panel()
         .end_group()
         .build()
     )

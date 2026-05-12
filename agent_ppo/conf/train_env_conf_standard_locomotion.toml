@@ -230,37 +230,9 @@ weight = 10.0
 [rewards.reach_goal.params]
 threshold = 0.6
 
-# =====================================================================
-# 增强奖励项（agent_ppo/feature/reward_process.py 中已实现）
-# =====================================================================
-
-# --- 步态与足部 ---
-[rewards.feet_stumble]
-weight = -0.5
-
-[rewards.feet_slide]
-weight = -0.1
-
-# --- 关节平滑 ---
-[rewards.joint_vel]
-weight = -1e-4
-
-[rewards.joint_position_penalty]
-weight = -0.5
-[rewards.joint_position_penalty.params]
-stand_still_scale = 5.0
-velocity_threshold = 0.1
-
-# --- 避障（maze 地形下生效）---
-[rewards.obstacle_evasion]
-weight = -1.0
-[rewards.obstacle_evasion.params]
-obstacle_threshold = -0.3
-near_x_end = 10
-body_y_start = 3
-body_y_end = 13
-turn_std = 0.5
-
-# --- 终止惩罚 ---
-[rewards.termination]
-weight = -0.5
+# TODO: you can add non-IsaacLab locomotion rewards such as energy /
+# correct_base_height / feet_stumble as needed.
+# After implementing the corresponding _reward_<name> method in
+# agent_ppo/feature/reward_process.py, you can activate it here.
+# TODO：可按需补充 energy / correct_base_height / feet_stumble 等非 IsaacLab 运控奖励。
+# 自行在 agent_ppo/feature/reward_process.py 实现对应 _reward_<name> 方法后即可在此激活。
