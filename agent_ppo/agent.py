@@ -75,9 +75,14 @@ class Agent(BaseAgent):
 
     def _init_flat(self, num_proprio, num_scan, stage):
         """
-        Initialize single-model (flat) architecture.
-        初始化单模型（扁平）架构。
+        Initialize enhanced single-model architecture.
+        初始化增强单模型架构。
         """
+        # 从 stage 读取增强配置（带默认值向后兼容）
+        use_residual = getattr(stage, "use_residual", True)
+        use_layernorm_per_layer = getattr(stage, "use_layernorm_per_layer", True)
+        obs_normalization = getattr(stage, "obs_normalization", True)
+
         self.model = ActorCritic(
             num_obs=self.num_obs,
             num_critic_obs=self.num_critic_obs,
@@ -85,13 +90,28 @@ class Agent(BaseAgent):
             actor_hidden_dims=stage.actor_hidden_dims,
             critic_hidden_dims=stage.critic_hidden_dims,
             activation=stage.activation,
+            use_residual=use_residual,
+            use_layernorm_per_layer=use_layernorm_per_layer,
+            obs_normalization=obs_normalization,
         ).to(self.device)
 
         self.logger.info(f"Actor MLP: {self.model.actor}")
         self.logger.info(f"Critic MLP: {self.model.critic}")
+        self.logger.info(
+            f"Enhanced features: residual={use_residual}, "
+            f"layernorm_per_layer={use_layernorm_per_layer}, "
+            f"obs_normalization={obs_normalization}"
+        )
 
         params = [{"params": self.model.parameters(), "name": "actor_critic"}]
         self.optimizer = optim.Adam(params, lr=stage.lr)
+
+        # 从 stage 读取算法增强配置
+        use_cosine_lr = getattr(stage, "use_cosine_lr", True)
+        warmup_steps = getattr(stage, "warmup_steps", 500)
+        total_training_steps = getattr(stage, "total_training_steps", 500000)
+        min_learning_rate = getattr(stage, "min_learning_rate", 1e-6)
+        use_reward_normalization = getattr(stage, "reward_normalization", True)
 
         self.algorithm = AlgorithmPPO(
             model=self.model,
@@ -102,6 +122,11 @@ class Agent(BaseAgent):
             learning_rate=stage.lr,
             num_mini_batches=stage.num_mini_batches,
             num_learning_epochs=stage.num_learning_epochs,
+            use_cosine_lr=use_cosine_lr,
+            warmup_steps=warmup_steps,
+            total_training_steps=total_training_steps,
+            min_learning_rate=min_learning_rate,
+            use_reward_normalization=use_reward_normalization,
         )
 
     def exploit(self, list_obs_data):
