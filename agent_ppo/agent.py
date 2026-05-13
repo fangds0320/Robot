@@ -85,6 +85,8 @@ class Agent(BaseAgent):
             actor_hidden_dims=stage.actor_hidden_dims,
             critic_hidden_dims=stage.critic_hidden_dims,
             activation=stage.activation,
+            init_noise_std=getattr(stage, "init_noise_std", 1.0),
+            obs_normalization=getattr(stage, "obs_normalization", False),
         ).to(self.device)
 
         self.logger.info(f"Actor MLP: {self.model.actor}")
@@ -102,6 +104,8 @@ class Agent(BaseAgent):
             learning_rate=stage.lr,
             num_mini_batches=stage.num_mini_batches,
             num_learning_epochs=stage.num_learning_epochs,
+            entropy_coef=getattr(stage, "entropy_coef", 0.01),
+            max_grad_norm=getattr(stage, "max_grad_norm", 1.0),
         )
 
     def exploit(self, list_obs_data):
@@ -126,16 +130,19 @@ class Agent(BaseAgent):
         """
         return self.algorithm.learn()
 
-    def predict(self, list_obs_data):
+    def predict(self, list_obs_data, update_norm=False):
         """
-        Generate predictions with actor-critic network.
         使用 actor-critic 网络生成预测。
+
+        Args:
+            list_obs_data: (obs, critic_obs) 元组
+            update_norm: 是否更新观测归一化统计量（训练时为True，评估时为False）
         """
         (obs, critic_obs) = list_obs_data
 
         with torch.no_grad():
-            actions = self.algorithm.actor_critic.act(obs)
-            values = self.algorithm.actor_critic.evaluate(critic_obs)
+            actions = self.algorithm.actor_critic.act(obs, update_norm=update_norm)
+            values = self.algorithm.actor_critic.evaluate(critic_obs, update_norm=update_norm)
             log_probs = self.algorithm.actor_critic.get_actions_log_prob(actions)
             action_mean = self.algorithm.actor_critic.action_mean.detach()
             action_std = self.algorithm.actor_critic.action_std.detach()

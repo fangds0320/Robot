@@ -44,7 +44,7 @@ num_cols = 20
 
 # Difficulty range [min, max], valid range: [0.0, 1.0].
 # 难度范围 [min, max]，合法范围：[0.0, 1.0]
-difficulty_range = [0.0, 1.0]
+difficulty_range = [0.0, 0.9]
 
 # Whether to enable terrain curriculum (promote/demote difficulty by performance).
 # 是否启用地形课程学习（按表现晋级/降级难度）
@@ -52,7 +52,7 @@ curriculum = true
 
 # Max init difficulty tier for robot placement, valid range: [0, 9].
 # 机器人初始放置的最大难度档，合法范围：[0, 9]
-max_init_terrain_level = 5
+max_init_terrain_level = 3
 
 
 # Sub-terrain proportions (all proportions must sum to 1.0).
@@ -129,9 +129,9 @@ resampling_time = [10.0, 10.0]
 [commands.limit]
 # Velocity command **hard limits** (curriculum may expand sampling range up to here).
 # 速度命令 **采样上限**（硬约束，curriculum 最多扩展到该范围）
-lin_vel_x = [-2.0, 2.0]
-lin_vel_y = [-1.5, 1.5]
-ang_vel_z = [-1.5, 1.5]
+lin_vel_x = [-1.4, 1.4]
+lin_vel_y = [-0.7, 0.7]
+ang_vel_z = [-1.2, 1.2]
 
 [commands.ranges]
 # Velocity command **initial sampling ranges** (expand towards limit when curriculum is enabled).
@@ -140,8 +140,8 @@ ang_vel_z = [-1.5, 1.5]
 # Start with forward-only to prevent reversing that triggers stair-curriculum demotions;
 # curriculum will expand towards limit.
 # 初始只前进，避免后退导致楼梯频繁降级；curriculum 会扩展到 limit
-lin_vel_x = [0.0, 0.5]
-lin_vel_y = [-0.3, 0.3]
+lin_vel_x = [0.05, 0.55]
+lin_vel_y = [-0.12, 0.12]
 ang_vel_yaw = [-1.0, 1.0]
 
 
@@ -160,13 +160,13 @@ weight = 1.0
 [rewards.track_lin_vel_xy.params]
 # Std of Gaussian kernel, controls how sharp the error → reward decay is.
 # 高斯核标准差，控制误差 → 奖励的衰减陡峭程度
-std = 0.25
+std = 0.30
 # Velocity command name.
 # 速度命令名
 command_name = "base_velocity"
 
 [rewards.track_ang_vel_z]
-weight = 0.5
+weight = 0.35
 [rewards.track_ang_vel_z.params]
 std = 0.25
 command_name = "base_velocity"
@@ -181,58 +181,77 @@ weight = -2.0
 [rewards.ang_vel_xy]
 # Penalty on pitch/roll angular velocity.
 # X/Y 方向角速度惩罚（抑制 pitch/roll 抖动）
-weight = -0.05
+weight = -0.08
 
 # --- Negative: joint smoothness ---
 # --- 负向：关节 ---
 [rewards.joint_acc]
-# Joint acceleration penalty.
-# 关节加速度惩罚
+# 关节加速度惩罚（对齐 agent_ppo_1，保留原值）
 weight = -2.5e-7
 
 [rewards.joint_torques]
-# Joint torque penalty.
-# 关节扭矩惩罚
-weight = -1e-4
+# 关节扭矩惩罚（对齐 agent_ppo_1，略高于基线）
+weight = -1.5e-4
 
 [rewards.dof_pos_limits]
-# Penalty when joints approach position limits.
 # 接近关节位置极限时的惩罚
 weight = -2.0
 
 # --- Negative: action smoothness ---
 # --- 负向：动作平滑 ---
 [rewards.action_rate]
-# Delta between consecutive actions (1st order).
 # 相邻动作差（一阶）
-weight = -0.01
+weight = -0.012
 
 # --- Negative: undesired contacts ---
 # --- 负向：碰撞 ---
 [rewards.undesired_contacts]
-weight = -1.0
+weight = -2.0
 [rewards.undesired_contacts.params]
-# Max allowed contacts before penalty kicks in.
-# 触发阈值：被罚前允许的最大接触数
 threshold = 1
 
 # --- Extra: anti-tipping ---
 # --- 额外：防倾倒 ---
 [rewards.flat_orientation]
-# Penalty on deviation from flat base orientation.
 # 基座偏离水平姿态的惩罚
-weight = -1.5
+weight = -1.8
 
 [rewards.reach_goal]
-# Reach-goal reward example (active only when env.goal_positions is maintained, i.e. track terrain).
-# 到达目标奖励示例（仅在 track 地形下 env.goal_positions 被维护时生效）。
+# 到达目标奖励（仅在 track 地形下生效）
 weight = 10.0
 [rewards.reach_goal.params]
 threshold = 0.6
 
-# TODO: you can add non-IsaacLab locomotion rewards such as energy /
-# correct_base_height / feet_stumble as needed.
-# After implementing the corresponding _reward_<name> method in
-# agent_ppo/feature/reward_process.py, you can activate it here.
-# TODO：可按需补充 energy / correct_base_height / feet_stumble 等非 IsaacLab 运控奖励。
-# 自行在 agent_ppo/feature/reward_process.py 实现对应 _reward_<name> 方法后即可在此激活。
+# =====================================================================
+# 新增自定义奖励（对齐 agent_ppo_1 验证过的有效组合）
+# =====================================================================
+
+# --- Gait quality: foot air time (暂不启用) ---
+# [rewards.feet_air_time]
+# weight = 1.0
+# [rewards.feet_air_time.params]
+# command_name = "base_velocity"
+# threshold = 0.5
+
+# --- Gait quality: foot slide (暂不启用) ---
+# [rewards.feet_slide]
+# weight = -0.05
+
+# --- Gait quality: foot stumble ---
+[rewards.feet_stumble]
+weight = -0.12
+
+# --- Posture: joint position penalty (暂不启用) ---
+# [rewards.joint_position_penalty]
+# weight = -0.2
+# [rewards.joint_position_penalty.params]
+# stand_still_scale = 5.0
+# velocity_threshold = 0.1
+
+# --- Failure: termination penalty ---
+[rewards.termination]
+weight = -2.0
+
+# --- Dense: forward velocity (补充 track_lin_vel_xy 的 dense 信号) ---
+[rewards.forward_velocity]
+weight = 0.25

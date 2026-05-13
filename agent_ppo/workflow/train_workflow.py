@@ -339,7 +339,7 @@ def _compute_advantages_and_returns(storage, agent, critic_obs, logger):
     计算优势函数和回报。
     """
     last_critic_obs = torch.clone(critic_obs)
-    last_values = agent.algorithm.actor_critic.evaluate(last_critic_obs.detach()).detach()
+    last_values = agent.algorithm.actor_critic.evaluate(last_critic_obs.detach(), update_norm=False).detach()
     storage.compute_returns(last_values, agent.algorithm.gamma, agent.algorithm.lam)
 
     storage_stats = {
@@ -386,7 +386,7 @@ def run_episodes_(
             # Predict actions
             # 预测动作
             predict_data = (obs, critic_obs)
-            predict_result = agent.predict(predict_data)
+            predict_result = agent.predict(predict_data, update_norm=True)
 
             (
                 actions,

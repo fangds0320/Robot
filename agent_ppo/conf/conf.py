@@ -48,6 +48,7 @@ class StageConfig:
     actor_hidden_dims = [512, 256, 128]
     critic_hidden_dims = [512, 256, 128]
     activation = "elu"
+    obs_normalization = False  # 冷启动统计量不准会扭曲观测，先关闭，待统计量预热后再开启
 
     # --- Training hyperparameters
     # 训练超参数 ---
@@ -56,6 +57,9 @@ class StageConfig:
     num_mini_batches = 4
     num_steps_per_env = 48
     min_normalized_std = [0.05, 0.02, 0.05] * 4
+    entropy_coef = 0.005
+    init_noise_std = 0.65
+    max_grad_norm = 0.75
 
     # --- Saving
     # 保存 ---
