@@ -106,6 +106,8 @@ class Agent(BaseAgent):
             num_learning_epochs=stage.num_learning_epochs,
             entropy_coef=getattr(stage, "entropy_coef", 0.01),
             max_grad_norm=getattr(stage, "max_grad_norm", 1.0),
+            use_reward_norm=getattr(stage, "reward_normalization", True),
+            warmup_steps=getattr(stage, "lr_warmup_steps", 50),
         )
 
     def exploit(self, list_obs_data):

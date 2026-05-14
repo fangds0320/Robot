@@ -48,7 +48,7 @@ class StageConfig:
     actor_hidden_dims = [512, 256, 128]
     critic_hidden_dims = [512, 256, 128]
     activation = "elu"
-    obs_normalization = False  # 冷启动统计量不准会扭曲观测，先关闭，待统计量预热后再开启
+    obs_normalization = True  # 2048 并行 env 可在 1-2 个 rollout 内预热统计量
 
     # --- Training hyperparameters
     # 训练超参数 ---
@@ -60,6 +60,11 @@ class StageConfig:
     entropy_coef = 0.005
     init_noise_std = 0.65
     max_grad_norm = 0.75
+
+    # --- Reward & training dynamics
+    # 奖励归一化 & 训练动力学
+    reward_normalization = True
+    lr_warmup_steps = 50
 
     # --- Saving
     # 保存 ---

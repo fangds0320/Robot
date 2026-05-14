@@ -414,6 +414,10 @@ def run_episodes_(
             # 将张量移动到设备
             obs, critic_obs, rewards, dones = _move_tensors_to_device(obs, critic_obs, rewards, dones, agent.device)
 
+            # Normalize rewards for consistent reward scale across training
+            # 归一化奖励，保持训练过程中奖励尺度一致
+            rewards = agent.algorithm.normalize_reward(rewards, update=True)
+
             # Update episode statistics (always, regardless of decimation)
             # 更新 episode 统计（始终执行，不受降频影响）
             _update_episode_statistics(
