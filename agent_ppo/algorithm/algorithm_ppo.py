@@ -14,6 +14,7 @@ import torch.nn as nn
 from typing import Any
 import time
 import os
+import math
 
 from agent_ppo.feature.definition import RolloutStorage
 
@@ -21,7 +22,7 @@ from agent_ppo.feature.definition import RolloutStorage
 class RunningMeanStdReward:
     """
     奖励移动均值/标准差归一化，保持奖励信号尺度一致。
-    纯 PyTorch 实现，无 GPU↔CPU 拷贝。
+    纯 PyTorch 实现，无 GPU↔CPU 拷贝。含 NaN 防护。
     """
 
     def __init__(self, epsilon=1e-5, clip_range=10.0):
@@ -33,6 +34,9 @@ class RunningMeanStdReward:
 
     def update(self, x: torch.Tensor):
         x_detach = x.detach()
+        # NaN/Inf 防护：跳过坏数据，不污染统计量
+        if not torch.isfinite(x_detach).all():
+            return
         batch_mean = x_detach.mean().item()
         batch_var = x_detach.var().item()
         batch_count = x_detach.numel()
@@ -46,11 +50,14 @@ class RunningMeanStdReward:
         self.count = total_count
 
     def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        # 统计量被污染时跳过归一化，返回原始值
+        if not (math.isfinite(self.mean) and math.isfinite(self.var) and self.var > 0):
+            return x
         return torch.clamp(
             (x - self.mean) / (self.var**0.5 + self.epsilon),
             -self.clip_range,
             self.clip_range,
-        )
+        ).nan_to_num(nan=0.0, posinf=self.clip_range, neginf=-self.clip_range)
 
     def __call__(self, x: torch.Tensor, update: bool = False) -> torch.Tensor:
         if update:

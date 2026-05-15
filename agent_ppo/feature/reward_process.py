@@ -114,6 +114,65 @@ class RewardProcess(RewardProcessBase):
         except Exception:
             return torch.zeros(self.env.num_envs, device=self.env.device)
 
+    def _reward_energy(self):
+        """Energy penalty (torque × joint velocity).
+
+        能耗惩罚（扭矩 × 角速度），用于鼓励节能运动。
+        """
+        try:
+            asset = self._get_robot_asset()
+            # Compute mechanical power: torque * velocity
+            # 计算机械功率：扭矩 × 角速度
+            power = torch.sum(torch.abs(asset.data.joint_torque * asset.data.joint_vel), dim=1)
+            return power
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
+    def _reward_correct_base_height(self, target_height: float = 0.38):
+        """Penalize deviation from target base height.
+
+        惩罚基座高度偏离目标高度，用于保持机器人稳定姿态。
+
+        Args:
+            target_height: Target base height in meters.
+                          目标基座高度（米）。
+        """
+        try:
+            asset = self._get_robot_asset()
+            # Get current base height (z position)
+            # 获取当前基座高度（z 位置）
+            current_height = asset.data.root_pos_w[:, 2]
+            # Compute height deviation penalty
+            # 计算高度偏差惩罚
+            height_error = torch.abs(current_height - target_height)
+            return height_error
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
+    def _reward_no_fly(self):
+        """Penalize when all feet are off the ground (no-fly constraint).
+
+        惩罚四脚腾空的情况，鼓励机器人保持至少一只脚接触地面。
+        """
+        try:
+            sensor_cfg = self._get_foot_sensor_cfg()
+            contact_sensor = self.env.scene.sensors[sensor_cfg.name]
+
+            # Check which feet are in contact (force norm > threshold)
+            # 检查哪些脚在接触地面（力的范数 > 阈值）
+            forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids]
+            foot_contacts = torch.norm(forces, dim=-1) > 1.0
+
+            # Count number of feet in contact
+            # 计算接触地面的脚的数量
+            num_contacts = torch.sum(foot_contacts, dim=1)
+
+            # Penalty = 1.0 when no feet are in contact, 0.0 otherwise
+            # 当没有脚接触地面时惩罚为 1.0，否则为 0.0
+            return (num_contacts == 0).float()
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
     # ------------------------------------------------------------------
     # 终止惩罚
     # ------------------------------------------------------------------
@@ -133,5 +192,66 @@ class RewardProcess(RewardProcessBase):
                 failure = failure & ~goal_done
 
             return failure.float()
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
+    # ------------------------------------------------------------------
+    # Track 导航奖励（track 模式专用）
+    # ------------------------------------------------------------------
+
+    def _reward_obstacle_evasion(
+        self,
+        command_name: str = "base_velocity",
+        obstacle_threshold: float = -0.3,
+        near_x_end: int = 10,
+        body_y_start: int = 3,
+        body_y_end: int = 13,
+        turn_std: float = 0.5,
+    ):
+        """惩罚前方被障碍阻挡时未主动转向。
+        使用 height_scan 近场窗口检测正前方高障碍物（柱子/墙壁），
+        用角速度检测规避转向。
+        """
+        try:
+            asset = self._get_robot_asset()
+            sensor = self.env.scene.sensors["height_scanner"]
+            scan = sensor.data.pos_w[:, 2:3] - sensor.data.ray_hits_w[..., 2]
+            grid = scan.view(self.env.num_envs, 16, 16)
+            window = grid[:, body_y_start:body_y_end, :near_x_end]
+            col_blocked = (window < obstacle_threshold).any(dim=-1).float()
+            blocked = col_blocked.mean(dim=-1)
+            yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
+            not_evading = torch.exp(-yaw_rate / turn_std)
+            cmd = self.env.command_manager.get_command(command_name)
+            has_fwd_cmd = (cmd[:, 0] > 0.05).float()
+            return blocked * not_evading * has_fwd_cmd
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
+    def _reward_approach_goal(self):
+        """接近迷宫出口奖励：距离减少→正奖励，距离增加→负奖励。"""
+        try:
+            if not hasattr(self.env, "goal_positions") or self.env.goal_positions is None:
+                return torch.zeros(self.env.num_envs, device=self.env.device)
+            robot = self._get_robot_asset()
+            robot_pos = robot.data.root_pos_w[:, :2]
+            goal_pos = self.env.goal_positions[:, :2]
+            current_dist = torch.norm(goal_pos - robot_pos, dim=1)
+            if not hasattr(self.env, "_previous_goal_dist") or self.env._previous_goal_dist is None:
+                self.env._previous_goal_dist = current_dist.clone()
+                return torch.zeros(self.env.num_envs, device=self.env.device)
+            delta_dist = current_dist - self.env._previous_goal_dist
+            term_mgr = self.env.termination_manager
+            reset_mask = term_mgr.terminated | term_mgr.time_outs
+            delta_dist[reset_mask] = 0.0
+            self.env._previous_goal_dist = current_dist.clone()
+            return -delta_dist
+        except Exception:
+            return torch.zeros(self.env.num_envs, device=self.env.device)
+
+    def _reward_navigation_time(self):
+        """每步固定惩罚，鼓励快速到达出口。"""
+        try:
+            return torch.ones(self.env.num_envs, device=self.env.device)
         except Exception:
             return torch.zeros(self.env.num_envs, device=self.env.device)

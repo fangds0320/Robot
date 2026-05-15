@@ -46,14 +46,15 @@ class Agent(BaseAgent):
         # not user-tunable business params). Do NOT read them from TOML.
         # 模型架构维度来自 StageConfig（架构常量，非业务可调参数），不从 TOML 读。
         self.num_actions = stage.num_actions
-        self.num_critic_obs = stage.num_critic_observations
 
         num_proprio = stage.num_proprio_obs
         num_scan = stage.num_scan
+        num_goal = getattr(stage, "num_goal_obs", 0)
 
-        # policy obs = proprio + scan
-        # 策略观测 = 本体感知 + 扫描
-        self.num_obs = num_proprio + num_scan
+        # policy obs = proprio + scan + goal (track mode adds 4)
+        # 策略观测 = 本体感知 + 扫描 + goal（track 模式追加 4 维）
+        self.num_obs = num_proprio + num_scan + num_goal
+        self.num_critic_obs = stage.num_critic_observations + num_goal
 
         self._init_flat(num_proprio, num_scan, stage)
 
@@ -87,6 +88,8 @@ class Agent(BaseAgent):
             activation=stage.activation,
             init_noise_std=getattr(stage, "init_noise_std", 1.0),
             obs_normalization=getattr(stage, "obs_normalization", False),
+            use_residual=getattr(stage, "use_residual", False),
+            use_layernorm_per_layer=getattr(stage, "use_layernorm_per_layer", False),
         ).to(self.device)
 
         self.logger.info(f"Actor MLP: {self.model.actor}")

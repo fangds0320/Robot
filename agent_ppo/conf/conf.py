@@ -31,6 +31,7 @@ class StageConfig:
     # 阶段标识 ---
     name = ""
     task_type = "standard"
+    num_goal_obs = 0
 
     # --- Model architecture dimensions (Isaac Lab Unitree-Go2-Velocity constants)
     # These are fixed by the Isaac Lab task definition and the network structure;
@@ -45,10 +46,12 @@ class StageConfig:
     # --- Model architecture
     # 模型架构 ---
     model_class = "ActorCritic"
-    actor_hidden_dims = [512, 256, 128]
-    critic_hidden_dims = [512, 256, 128]
+    actor_hidden_dims = [1024, 512, 256]
+    critic_hidden_dims = [1024, 512, 256]
     activation = "elu"
     obs_normalization = True  # 2048 并行 env 可在 1-2 个 rollout 内预热统计量
+    use_residual = True
+    use_layernorm_per_layer = True
 
     # --- Training hyperparameters
     # 训练超参数 ---
@@ -111,6 +114,24 @@ class LocomotionConfig(StageConfig):
     task_type = "standard"
 
 
+class TrackConfig(StageConfig):
+    """
+    Stage: track navigation — learn obstacle avoidance and maze navigation.
+    阶段：track 导航 —— 学习避障和迷宫导航。
+
+    Uses 4 extra goal observation dims on top of locomotion obs.
+    在 locomotion 观测基础上叠加 4 维 goal 特征。
+    """
+
+    name = "locomotion"
+    task_type = "track"
+    num_goal_obs = 4
+
+    # Lower LR for complex navigation task
+    # 复杂导航任务降低学习率
+    lr = 1e-4
+
+
 class Config:
     """
     Unified config entry point.
@@ -125,7 +146,8 @@ class Config:
 
     # Switch stage by changing CURRENT
     # 通过修改 CURRENT 切换阶段
-    CURRENT = LocomotionConfig
+    # CURRENT = LocomotionConfig   # standard 模式
+    CURRENT = TrackConfig         # track 导航模式
 
     @staticmethod
     def load_conf(logger):

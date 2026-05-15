@@ -72,6 +72,47 @@ def resolve_nn_activation(activation: str) -> nn.Module:
     return activation_map[activation]
 
 
+class ResidualBlock(nn.Module):
+    """
+    带 LayerNorm 和可选投影的残差块。
+    input_dim == output_dim 时直接跳跃连接，否则通过 Linear 投影对齐维度。
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, activation: str = "elu", use_layernorm: bool = True):
+        super().__init__()
+        self.linear1 = nn.Linear(input_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, output_dim)
+
+        act_fn = resolve_nn_activation(activation)
+        self.activation = act_fn
+
+        if use_layernorm:
+            self.norm1 = nn.LayerNorm(hidden_dim)
+            self.norm2 = nn.LayerNorm(output_dim)
+        else:
+            self.norm1 = nn.Identity()
+            self.norm2 = nn.Identity()
+
+        if input_dim != output_dim:
+            self.residual_proj = nn.Linear(input_dim, output_dim)
+        else:
+            self.residual_proj = None
+
+    def forward(self, x):
+        identity = x
+        out = self.linear1(x)
+        out = self.norm1(out)
+        out = self.activation(out)
+        out = self.linear2(out)
+        out = self.norm2(out)
+        if self.residual_proj is not None:
+            out = out + self.residual_proj(identity)
+        else:
+            out = out + identity
+        out = self.activation(out)
+        return out
+
+
 class ActorCritic(nn.Module):
     """
     使用扁平张量接口的Actor-Critic网络
@@ -84,12 +125,14 @@ class ActorCritic(nn.Module):
         num_obs: int,
         num_critic_obs: int,
         num_actions: int,
-        actor_hidden_dims: tuple[int] | list[int] = (512, 256, 128),
-        critic_hidden_dims: tuple[int] | list[int] = (512, 256, 128),
+        actor_hidden_dims: tuple[int] | list[int] = (1024, 512, 256),
+        critic_hidden_dims: tuple[int] | list[int] = (1024, 512, 256),
         activation: str = "elu",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         obs_normalization: bool = True,
+        use_residual: bool = True,
+        use_layernorm_per_layer: bool = True,
         **kwargs: dict[str, Any],
     ) -> None:
         """
@@ -105,10 +148,13 @@ class ActorCritic(nn.Module):
             init_noise_std: 探索噪声初始标准差
             noise_std_type: 标准差类型，"scalar"或"log"
             obs_normalization: 是否启用观测归一化
+            use_residual: 是否使用残差连接
+            use_layernorm_per_layer: 是否每层都加 LayerNorm
         """
         super().__init__()
 
-        activation_fn = resolve_nn_activation(activation)
+        self.use_residual = use_residual
+        self.use_layernorm_per_layer = use_layernorm_per_layer
 
         # 观测归一化模块
         if obs_normalization:
@@ -118,30 +164,9 @@ class ActorCritic(nn.Module):
             self.actor_obs_norm = _IdentityWithUpdate()
             self.critic_obs_norm = _IdentityWithUpdate()
 
-        # 构建策略网络
-        actor_layers = []
-        actor_layers.append(nn.Linear(num_obs, actor_hidden_dims[0]))
-        actor_layers.append(activation_fn)
-        for i in range(len(actor_hidden_dims)):
-            if i == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[i], num_actions))
-            else:
-                actor_layers.append(nn.Linear(actor_hidden_dims[i], actor_hidden_dims[i + 1]))
-                actor_layers.append(activation_fn)
-        self.actor = nn.Sequential(*actor_layers)
-
-        # 构建价值网络（含层标准化）
-        critic_layers = []
-        critic_layers.append(nn.Linear(num_critic_obs, critic_hidden_dims[0]))
-        critic_layers.append(activation_fn)
-        for i in range(len(critic_hidden_dims)):
-            if i == len(critic_hidden_dims) - 1:
-                critic_layers.append(nn.Linear(critic_hidden_dims[i], 1))
-            else:
-                critic_layers.append(nn.Linear(critic_hidden_dims[i], critic_hidden_dims[i + 1]))
-                critic_layers.append(nn.LayerNorm(critic_hidden_dims[i + 1]))
-                critic_layers.append(activation_fn)
-        self.critic = nn.Sequential(*critic_layers)
+        # 构建策略网络 & 价值网络
+        self.actor = self._build_mlp(num_obs, num_actions, actor_hidden_dims, activation, is_critic=False)
+        self.critic = self._build_mlp(num_critic_obs, 1, critic_hidden_dims, activation, is_critic=True)
 
         # 动作噪声初始化
         self.noise_std_type = noise_std_type
@@ -156,6 +181,24 @@ class ActorCritic(nn.Module):
         self.distribution = None
         # 禁用分布验证加速
         Normal.set_default_validate_args(False)
+
+    def _build_mlp(self, input_dim: int, output_dim: int, hidden_dims: list[int], activation: str, is_critic: bool = False) -> nn.Sequential:
+        """
+        构建 MLP，每层可配 LayerNorm，非首层可配残差连接。
+        """
+        layers = []
+        prev_dim = input_dim
+        for i, hidden_dim in enumerate(hidden_dims):
+            if self.use_residual and i > 0:
+                layers.append(ResidualBlock(prev_dim, hidden_dim, hidden_dim, activation, self.use_layernorm_per_layer))
+            else:
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                if self.use_layernorm_per_layer:
+                    layers.append(nn.LayerNorm(hidden_dim))
+                layers.append(resolve_nn_activation(activation))
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, output_dim))
+        return nn.Sequential(*layers)
 
     @staticmethod
     def init_weights(sequential, scales):
