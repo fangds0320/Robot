@@ -42,34 +42,29 @@ class StageConfig:
     num_scan = 256  # 16x16 height-scan dim / 16x16 高度扫描维度
     num_critic_observations = 316  # proprio(45) + scan(256) + privileged(15)
 
-    # --- Model architecture (optimized for navigation)
-    # 模型架构（针对导航优化）---
+    # --- Model architecture
+    # 模型架构 ---
     model_class = "ActorCritic"
-    # Increased network capacity for better feature extraction
-    # 增加网络容量以获得更好的特征提取能力
-    actor_hidden_dims = [1024, 512, 256, 128]
-    critic_hidden_dims = [1024, 512, 256, 128]
+    actor_hidden_dims = [512, 256, 128]
+    critic_hidden_dims = [512, 256, 128]
     activation = "elu"
+    obs_normalization = True  # 2048 并行 env 可在 1-2 个 rollout 内预热统计量
 
-    # --- Training hyperparameters (v3 optimized for stability + energy) ---
-    # 训练超参数（v3 针对稳定性 + 能耗优化）---
-    lr = 8e-5                 # Lower LR for stable gradient updates
-    num_learning_epochs = 5   # Fewer epochs to reduce overfitting risk
-    num_mini_batches = 4      # Fewer mini-batches for better gradient estimates
-    num_steps_per_env = 64    # Longer trajectory for better GAE estimation
-    min_normalized_std = [0.05, 0.025, 0.05] * 4  # Tighter std cap to limit entropy
-    
-    # PPO-specific hyperparameters
-    # PPO 特定超参数
-    entropy_coef = 0.005      # Low entropy coeff to prevent policy divergence
-    lam = 0.95               # GAE lambda
-    clip_param = 0.2         # PPO clip parameter
+    # --- Training hyperparameters
+    # 训练超参数 ---
+    lr = 3e-4
+    num_learning_epochs = 5
+    num_mini_batches = 4
+    num_steps_per_env = 48
+    min_normalized_std = [0.05, 0.02, 0.05] * 4
+    entropy_coef = 0.005
+    init_noise_std = 0.65
+    max_grad_norm = 0.75
 
-    # --- Additional PPO parameters (defaults, overridable per-stage) ---
-    # --- 额外 PPO 参数（默认值，各阶段可覆盖）---
-    gamma = 0.998             # High discount factor for long-term energy optimization
-    max_grad_norm = 0.5       # Tight gradient clipping
-    desired_kl = 0.005        # Tight KL target for adaptive LR
+    # --- Reward & training dynamics
+    # 奖励归一化 & 训练动力学
+    reward_normalization = True
+    lr_warmup_steps = 50
 
     # --- Saving
     # 保存 ---
@@ -110,105 +105,10 @@ class LocomotionConfig(StageConfig):
     """
     Stage: locomotion — learn stable walking on mixed terrain.
     阶段：locomotion —— 在混合地形上学习稳定行走。
-
-    Optimized for training convergence (v2):
-    - Lower entropy_coef to prevent policy divergence
-    - Lower LR + tighter clip for stable gradient updates
-    - Fewer epochs per batch to avoid overfitting
-    - Shorter rollout for fresher GAE estimates
-    - Reward scaling to keep gradient magnitudes stable
-    针对训练收敛优化（v2）：
-    - 降低熵系数防止策略发散
-    - 降低学习率 + 收紧 clip 实现稳定梯度更新
-    - 减少每 batch 的 epoch 数避免过拟合
-    - 缩短 rollout 获得更新鲜的 GAE 估计
-    - 奖励缩放保持梯度幅值稳定
     """
 
     name = "locomotion"
     task_type = "standard"
-
-    # --- Optimized PPO hyperparameters for stable convergence (v3) ---
-    # --- 优化后的 PPO 超参数，实现稳定收敛（v3）---
-    # Key fixes for 1-hour training plateau:
-    # - entropy_loss still rising 16→20 → further cut entropy_coef (0.015→0.005)
-    #   to stop policy std divergence and restore deterministic behavior
-    # - 熵损失仍从16升到20 → 进一步降低 entropy_coef (0.015→0.005)
-    #   以阻止策略 std 发散，恢复确定性行为
-    # - total_loss climbing → reduce lr for more stable gradient steps
-    # - total_loss 攀升 → 降低学习率以获得更稳定的梯度更新
-    lr = 8e-5               # 进一步降低学习率，防止熵驱动的梯度更新过大（之前1e-4）
-    entropy_coef = 0.005    # 大幅削减熵系数，阻止策略分布持续发散（之前0.015仍导致熵16→20）
-    lam = 0.95              # 标准 GAE lambda
-    clip_param = 0.2        # 收紧 PPO clip 范围，限制策略更新幅度
-    num_learning_epochs = 5  # 减少 epoch 数，降低每 batch 过拟合风险（之前6）
-    num_mini_batches = 4     # 减少 mini-batch 数，增大每 batch 样本量提高梯度估计精度
-    num_steps_per_env = 64  # 缩短 rollout 长度，让 GAE 估计更及时
-    gamma = 0.998            # 更高折扣因子，关注长期回报，让能耗优化有长期视野（之前0.995）
-    max_grad_norm = 0.5      # 更严格的梯度裁剪，防止大 reward 导致梯度爆炸
-    desired_kl = 0.005       # 收紧目标 KL 散度，自适应学习率更敏感（之前0.008）
-    min_normalized_std = [0.05, 0.025, 0.05] * 4  # 收紧 min_std 限制熵增长上限（之前[0.08,0.04,0.08]）
-
-
-class TrackLocomotionConfig(StageConfig):
-    """
-    Stage: track locomotion — learn navigation on track terrain.
-    阶段：赛道运动 —— 在赛道地形上学习导航。
-
-    Optimized for track competition (v4 — navigation-first design):
-    Track scoring: Total = completion_coeff × (0.4×Time + 0.4×Posture + 0.2×Energy)
-    NO forward_distance score — completion is a multiplier on everything!
-
-    Key design decisions:
-    - Higher num_steps_per_env (128) for 150s episodes with better GAE
-    - Moderate entropy (0.008) — diverse terrain needs exploration, but
-      maze navigation demands deterministic turning
-    - gamma=0.998 — reach_goal bonus must propagate back ~1600 steps
-      with ~40% retained value for effective credit assignment
-    - lam=0.97 — higher bias-variance tradeoff for long trajectories
-    - lr=1e-4 — slightly higher than standard, track navigation has
-      steeper reward landscape (sparse reach_goal)
-    - Larger network [1024,1024,512,256] — must learn obstacle-aware
-      locomotion + maze navigation from height-scan alone
-    - Slightly looser min_std for terrain adaptation while keeping
-      entropy under control
-
-    针对赛道竞赛优化（v4 — 导航优先设计）：
-    赛道评分：总分 = 完成系数 × (0.4×时间 + 0.4×姿态 + 0.2×能耗)
-    没有前进距离分数 — 完成率是总分的乘数！
-
-    关键设计决策：
-    - 提高 num_steps_per_env (128) 适配 150s episode，改善 GAE 估计
-    - 中等 entropy (0.008) — 多样地形需要探索，但迷宫导航要求确定性转弯
-    - gamma=0.998 — reach_goal 奖励需反向传播 ~1600 步且保留 ~40% 价值
-    - lam=0.97 — 长轨迹下更高的 bias-variance 权衡
-    - lr=1e-4 — 略高于标准模式，赛道导航奖励 landscape 更陡峭（稀疏 reach_goal）
-    - 更大网络 [1024,1024,512,256] — 必须仅从 height-scan 学会感知障碍的运动 + 迷宫导航
-    - 稍宽松 min_std 以适应地形多样性，同时控制熵
-    """
-
-    name = "track_locomotion"
-    task_type = "track"
-
-    # Expanded network for complex navigation (obstacle-aware locomotion + maze)
-    # 扩展网络用于复杂导航（感障运动 + 迷宫）
-    actor_hidden_dims = [1024, 1024, 512, 256]
-    critic_hidden_dims = [1024, 1024, 512, 256]
-
-    # Optimized PPO hyperparameters for track navigation (v4)
-    # 优化的 PPO 超参数用于赛道导航（v4）
-    lr = 1e-4               # 略高学习率用于赛道陡峭奖励 landscape（之前 8e-5）
-    entropy_coef = 0.008    # 中等探索：坡/楼梯/迷宫多样地形需探索，但不能发散（之前 0.004）
-    lam = 0.97              # 更高 lambda 适配长轨迹 GAE 估计（之前 0.97 不变）
-    clip_param = 0.2        # 标准 PPO clip
-    gamma = 0.998            # 高折扣因子让 reach_goal 奖励反向传播整条赛道
-    max_grad_norm = 0.5      # 严格梯度裁剪
-
-    num_learning_epochs = 6  # 适中 epoch 数：262K batch ÷ 4 mini-batches × 6 = 24 updates（之前 7）
-    num_mini_batches = 4     # 4 mini-batches：每 batch 65K 样本，梯度估计精度高
-    num_steps_per_env = 128  # 翻倍：150s episode 需要更长 rollout 改善 GAE（之前 64）
-    desired_kl = 0.008       # 稍宽松 KL 目标：赛道奖励陡峭，允许略大策略更新（之前继承 0.005）
-    min_normalized_std = [0.06, 0.03, 0.06] * 4  # 稍宽松适应多样地形（之前 [0.04,0.02,0.04]）
 
 
 class Config:

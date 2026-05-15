@@ -41,4 +41,8 @@ class PolicyObservationProcess(ObservationProcess):
 
     def process(self):
         obs = self.default_observation()
+        # TODO (track terrain): you can construct features from env.goal_positions /
+        # env.goal_yaw or env.scene.sensors["nav_scanner"] and concatenate them to obs.
+        # TODO (track 地形)：可按需从 env.goal_positions / env.goal_yaw
+        # 或 env.scene.sensors["nav_scanner"] 构造特征并拼接到 obs。
         return obs
