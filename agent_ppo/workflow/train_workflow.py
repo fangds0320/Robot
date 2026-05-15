@@ -337,10 +337,24 @@ def _compute_advantages_and_returns(storage, agent, critic_obs, logger):
     """
     Compute advantage function and returns.
     计算优势函数和回报。
+
+    Reward normalization is applied before GAE to stabilize training:
+    raw rewards are clipped and scaled by running std, preventing
+    exploding advantage values from large reward scales.
+    GAE 前应用奖励归一化以稳定训练：
+    原始奖励被裁剪并按运行标准差缩放，防止大奖励尺度导致优势值爆炸。
     """
+    # Normalize rewards before GAE computation for stable training
+    # GAE 计算前归一化奖励以稳定训练
+    raw_rewards = agent.algorithm.normalize_rewards()
+
     last_critic_obs = torch.clone(critic_obs)
-    last_values = agent.algorithm.actor_critic.evaluate(last_critic_obs.detach(), update_norm=False).detach()
+    last_values = agent.algorithm.actor_critic.evaluate(last_critic_obs.detach()).detach()
     storage.compute_returns(last_values, agent.algorithm.gamma, agent.algorithm.lam)
+
+    # Restore original rewards for logging/metrics
+    # 恢复原始奖励用于日志记录
+    agent.algorithm.restore_rewards(raw_rewards)
 
     storage_stats = {
         "reward_mean": storage.rewards.mean().item(),
@@ -386,7 +400,7 @@ def run_episodes_(
             # Predict actions
             # 预测动作
             predict_data = (obs, critic_obs)
-            predict_result = agent.predict(predict_data, update_norm=True)
+            predict_result = agent.predict(predict_data)
 
             (
                 actions,
@@ -413,10 +427,6 @@ def run_episodes_(
             # Move tensors to device
             # 将张量移动到设备
             obs, critic_obs, rewards, dones = _move_tensors_to_device(obs, critic_obs, rewards, dones, agent.device)
-
-            # Normalize rewards for consistent reward scale across training
-            # 归一化奖励，保持训练过程中奖励尺度一致
-            rewards = agent.algorithm.normalize_reward(rewards, update=True)
 
             # Update episode statistics (always, regardless of decimation)
             # 更新 episode 统计（始终执行，不受降频影响）

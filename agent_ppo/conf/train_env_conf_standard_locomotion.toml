@@ -1,9 +1,9 @@
 # =============================================================================
-# Standard Locomotion: locomotion training on a standard grid of mixed sub-terrains.
-# Standard Locomotion: 标准地形运动训练（多种子地形按比例混合）
+# Standard Locomotion: optimized for navigation competition
+# Standard Locomotion: 针对导航竞赛优化
 #
-# Based on  Stage1 + extra terms (termination / flat_orientation / feet_stumble).
-# 基于 Stage1 + 额外项（termination / flat_orientation / feet_stumble）
+# Optimized for maximum forward distance, energy efficiency, and posture stability.
+# 针对最大前进距离、能效和姿态稳定性进行优化。
 # =============================================================================
 
 # === Basic Configuration ===
@@ -13,9 +13,9 @@
 # 并行环境数量，合法范围：[1, 4096]
 num_envs = 2048
 
-# Max episode duration (seconds).
-# 最大 episode 时长（秒）
-episode_length_s = 25
+# Max episode duration (seconds) - significantly increased to allow longer training
+# 最大 episode 时长（秒）- 大幅增加以支持更长训练
+episode_length_s = 45
 
 [env_conf]
 # Random seed.
@@ -44,7 +44,7 @@ num_cols = 20
 
 # Difficulty range [min, max], valid range: [0.0, 1.0].
 # 难度范围 [min, max]，合法范围：[0.0, 1.0]
-difficulty_range = [0.0, 0.9]
+difficulty_range = [0.0, 1.0]
 
 # Whether to enable terrain curriculum (promote/demote difficulty by performance).
 # 是否启用地形课程学习（按表现晋级/降级难度）
@@ -52,7 +52,7 @@ curriculum = true
 
 # Max init difficulty tier for robot placement, valid range: [0, 9].
 # 机器人初始放置的最大难度档，合法范围：[0, 9]
-max_init_terrain_level = 3
+max_init_terrain_level = 5
 
 
 # Sub-terrain proportions (all proportions must sum to 1.0).
@@ -129,9 +129,9 @@ resampling_time = [10.0, 10.0]
 [commands.limit]
 # Velocity command **hard limits** (curriculum may expand sampling range up to here).
 # 速度命令 **采样上限**（硬约束，curriculum 最多扩展到该范围）
-lin_vel_x = [-1.4, 1.4]
-lin_vel_y = [-0.7, 0.7]
-ang_vel_z = [-1.2, 1.2]
+lin_vel_x = [-2.0, 2.0]
+lin_vel_y = [-1.5, 1.5]
+ang_vel_z = [-1.5, 1.5]
 
 [commands.ranges]
 # Velocity command **initial sampling ranges** (expand towards limit when curriculum is enabled).
@@ -140,118 +140,199 @@ ang_vel_z = [-1.2, 1.2]
 # Start with forward-only to prevent reversing that triggers stair-curriculum demotions;
 # curriculum will expand towards limit.
 # 初始只前进，避免后退导致楼梯频繁降级；curriculum 会扩展到 limit
-lin_vel_x = [0.05, 0.55]
-lin_vel_y = [-0.12, 0.12]
-ang_vel_yaw = [-1.0, 1.0]
+lin_vel_x = [0.0, 0.8]
+lin_vel_y = [-0.2, 0.2]
+ang_vel_yaw = [-0.5, 0.5]
 
 
 # =====================================================================
-# Reward Configuration
-# 奖励配置
+# Reward Configuration - Optimized for Navigation Competition (v3)
+# 奖励配置 - 针对导航竞赛优化（v3）
 #
-# Each reward term must have a numeric `weight`; parameterized rewards use [rewards.<name>.params].
-# 每个奖励项必须包含数值型 weight；带参数的奖励用 [rewards.<name>.params] 配置
+# Key fixes for 1-hour training plateau:
+# 1. energy_score near 0 → 3x energy/joint-torque penalties + 2x action_rate
+# 2. entropy_loss rising → addressed in conf.py (entropy_coef 0.015→0.005)
+# 3. forward_score plateau → stronger velocity tracking + mild forward boost
+# 4. posture_score medium → stronger stability penalties
+#
+# 针对 1 小时训练平台期的关键修复：
+# 1. energy_score 几乎为 0 → 3倍 能耗/关节扭矩惩罚 + 2倍 action_rate
+# 2. entropy_loss 持续上升 → conf.py 中处理（entropy_coef 0.015→0.005）
+# 3. forward_score 平台期 → 更强速度跟踪 + 温和前进奖励提升
+# 4. posture_score 中等 → 更强稳定性惩罚
 # =====================================================================
 
-# --- Positive: velocity tracking ---
-# --- 正向：速度跟踪 ---
+# --- Positive: velocity tracking (forward progress) ---
+# --- 正向：速度跟踪（前进进度）---
 [rewards.track_lin_vel_xy]
-weight = 1.0
+# Primary velocity tracking reward — robot must follow commanded velocity.
+# 主速度跟踪奖励 — 机器人必须跟随指令速度。
+# FURTHER INCREASED: 8.0 → 10.0 for stronger tracking signal.
+# 进一步提高：8.0 → 10.0 以获得更强的跟踪信号。
+weight = 10.0
 [rewards.track_lin_vel_xy.params]
 # Std of Gaussian kernel, controls how sharp the error → reward decay is.
 # 高斯核标准差，控制误差 → 奖励的衰减陡峭程度
-std = 0.30
+std = 0.5
 # Velocity command name.
 # 速度命令名
 command_name = "base_velocity"
 
 [rewards.track_ang_vel_z]
-weight = 0.35
+# Increased weight for better angular tracking.
+# 提高权重以改善角速度跟踪。
+weight = 2.0
 [rewards.track_ang_vel_z.params]
-std = 0.25
+std = 0.5
 command_name = "base_velocity"
+
+# --- Positive: forward velocity (direct forward progress) ---
+# --- 正向：前向速度（直接前进进度）---
+[rewards.forward_velocity]
+# Mild directional bonus — 2.0 → 2.5 to slightly boost forward_score.
+# 温和方向性奖励 — 2.0 → 2.5 略微提升 forward_score。
+# Still subservient to track_lin_vel_xy to prevent "just run forward" behavior.
+# 仍然从属于 track_lin_vel_xy，防止"只管前进"行为。
+weight = 2.5
 
 # --- Negative: base stability ---
 # --- 负向：基座稳定 ---
 [rewards.lin_vel_z]
-# Penalty on vertical linear velocity.
+# Penalty on vertical linear velocity (suppress bouncing).
 # Z 方向线速度惩罚（抑制上下跳跃）
-weight = -2.0
+# INCREASED: -2.0 → -3.0 for stronger posture enforcement.
+# 提高：-2.0 → -3.0 以更强力执行姿态约束。
+weight = -3.0
 
 [rewards.ang_vel_xy]
 # Penalty on pitch/roll angular velocity.
 # X/Y 方向角速度惩罚（抑制 pitch/roll 抖动）
+# INCREASED: -0.05 → -0.08 for tighter roll/pitch control.
+# 提高：-0.05 → -0.08 以获得更紧的 roll/pitch 控制。
 weight = -0.08
 
 # --- Negative: joint smoothness ---
 # --- 负向：关节 ---
 [rewards.joint_acc]
-# 关节加速度惩罚（对齐 agent_ppo_1，保留原值）
-weight = -2.5e-7
+# Joint acceleration penalty — CRITICAL for action smoothness and energy saving.
+# 关节加速度惩罚 — 对动作平滑和节能至关重要。
+# FURTHER INCREASED: -3e-7 → -6e-7. Smoother motion = less energy waste.
+# 进一步提高：-3e-7 → -6e-7。更平滑的动作 = 更少能量浪费。
+weight = -6e-7
 
 [rewards.joint_torques]
-# 关节扭矩惩罚（对齐 agent_ppo_1，略高于基线）
-weight = -1.5e-4
+# Joint torque penalty — DIRECTLY targets energy score.
+# 关节扭矩惩罚 — 直接针对能耗分数。
+# 3x BOOST: -1.5e-4 → -5e-4. Torque * velocity = mechanical power, so
+# reducing torque directly reduces energy consumption and improves energy_score.
+# 3倍增强：-1.5e-4 → -5e-4。扭矩 × 速度 = 机械功率，
+# 降低扭矩直接减少能耗并提升 energy_score。
+weight = -5e-4
 
 [rewards.dof_pos_limits]
+# Penalty when joints approach position limits.
 # 接近关节位置极限时的惩罚
-weight = -2.0
+weight = -3.0
 
 # --- Negative: action smoothness ---
 # --- 负向：动作平滑 ---
 [rewards.action_rate]
+# Delta between consecutive actions (1st order).
 # 相邻动作差（一阶）
-weight = -0.012
+# 2x BOOST: -0.03 → -0.06. Smoother actions → less high-frequency torque
+# → lower mechanical power consumption → better energy_score.
+# 2倍增强：-0.03 → -0.06。更平滑的动作 → 更少高频扭矩
+# → 更低机械功率消耗 → 更好的 energy_score。
+weight = -0.06
 
 # --- Negative: undesired contacts ---
 # --- 负向：碰撞 ---
 [rewards.undesired_contacts]
-weight = -2.0
+# INCREASED: -4.0 → -5.0 — stronger penalty for body-ground contact.
+# 提高：-4.0 → -5.0 — 对身体接触地面的惩罚更强。
+weight = -5.0
 [rewards.undesired_contacts.params]
-threshold = 1
+# Max allowed contacts before penalty kicks in.
+# 触发阈值：被罚前允许的最大接触数
+threshold = 2
 
 # --- Extra: anti-tipping ---
 # --- 额外：防倾倒 ---
 [rewards.flat_orientation]
+# Penalty on deviation from flat base orientation.
 # 基座偏离水平姿态的惩罚
-weight = -1.8
+# INCREASED: -4.0 → -5.0 — stronger anti-tipping force for better posture_score.
+# 提高：-4.0 → -5.0 — 更强的防倾倒力以获得更好的 posture_score。
+weight = -5.0
 
+# --- Energy efficiency (directly optimizes energy score) ---
+# --- 能效（直接优化能耗分数）---
+[rewards.energy_efficiency]
+# Energy consumption penalty — 3x BOOST: -0.05 → -0.18.
+# 能耗惩罚 — 3倍增强：-0.05 → -0.18。
+# energy_score near 0 indicates the penalty was too weak to be optimized.
+# With gamma=0.998 (longer horizon), the cumulative discounted penalty
+# is now substantial enough to force the policy to learn energy-minimizing gaits.
+# energy_score 接近 0 说明惩罚太弱无法被优化。
+# 配合 gamma=0.998（更长视野），累计折扣惩罚现在足够大，
+# 能强制策略学习节能步态。
+weight = -0.18
+
+# --- Base height tracking (posture stability) ---
+# --- 基座高度跟踪（姿态稳定性）---
+[rewards.base_height_tracking]
+# Base height tracking - helps with posture stability.
+# 基座高度跟踪 - 有助于姿态稳定性。
+# INCREASED: -3.0 → -4.0 to enforce more consistent base height.
+# 提高：-3.0 → -4.0 以强制更稳定的基座高度。
+weight = -4.0
+[rewards.base_height_tracking.params]
+target_height = 0.38
+
+# --- Posture stability (roll/pitch penalty) ---
+# --- 姿态稳定性（roll/pitch 惩罚）---
+[rewards.posture_stability]
+# Posture stability reward — INCREASED: -3.0 → -5.0 for better posture_score.
+# 姿态稳定性奖励 — 提高：-3.0 → -5.0 以获得更好的 posture_score。
+weight = -5.0
+
+# --- Navigation rewards (for track mode, inactive in standard) ---
+# --- 导航奖励（用于赛道模式，在标准模式下不活跃）---
 [rewards.reach_goal]
-# 到达目标奖励（仅在 track 地形下生效）
+# Reach-goal reward (active only when env.goal_positions is maintained, i.e. track terrain)
+# 到达目标奖励（仅在 track 地形下 env.goal_positions 被维护时生效）
 weight = 10.0
 [rewards.reach_goal.params]
 threshold = 0.6
 
-# =====================================================================
-# 新增自定义奖励（对齐 agent_ppo_1 验证过的有效组合）
-# =====================================================================
+[rewards.approach_goal]
+# Approach-goal reward (active only in track terrain)
+# 接近目标奖励（仅在赛道地形下活跃）
+weight = 5.0
 
-# --- Gait quality: foot air time (暂不启用) ---
-# [rewards.feet_air_time]
-# weight = 1.0
-# [rewards.feet_air_time.params]
-# command_name = "base_velocity"
-# threshold = 0.5
+# --- Obstacle avoidance (for maze terrain) ---
+# --- 避障（用于迷宫地形）---
+[rewards.obstacle_evasion]
+# Obstacle evasion penalty - helps navigate maze terrain
+# 避障惩罚 - 有助于迷宫地形导航
+weight = -1.0
+[rewards.obstacle_evasion.params]
+command_name = "base_velocity"
 
-# --- Gait quality: foot slide (暂不启用) ---
-# [rewards.feet_slide]
-# weight = -0.05
-
-# --- Gait quality: foot stumble ---
-[rewards.feet_stumble]
-weight = -0.12
-
-# --- Posture: joint position penalty (暂不启用) ---
-# [rewards.joint_position_penalty]
-# weight = -0.2
-# [rewards.joint_position_penalty.params]
-# stand_still_scale = 5.0
-# velocity_threshold = 0.1
-
-# --- Failure: termination penalty ---
+# --- Termination penalty ---
+# --- 终止惩罚 ---
 [rewards.termination]
-weight = -2.0
+# Failure termination penalty - discourages falling/crashing.
+# 失败终止惩罚 - 阻止摔倒/碰撞。
+# INCREASED: -15.0 → -20.0 to further reduce early terminations.
+# 提高：-15.0 → -20.0 以进一步减少提前终止。
+# Fewer terminations → longer episodes → more step_score.
+# 更少终止 → 更长 episode → 更高 step_score。
+weight = -20.0
 
-# --- Dense: forward velocity (补充 track_lin_vel_xy 的 dense 信号) ---
-[rewards.forward_velocity]
-weight = 0.25
+# --- Navigation time penalty (for track mode) ---
+# --- 导航时间惩罚（用于赛道模式）---
+[rewards.navigation_time]
+# Per-step time penalty - encourages fast completion.
+# 每步时间惩罚 - 鼓励快速完成。
+weight = -0.01

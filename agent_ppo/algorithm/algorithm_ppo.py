@@ -18,80 +18,6 @@ import os
 from agent_ppo.feature.definition import RolloutStorage
 
 
-class RunningMeanStdReward:
-    """
-    奖励移动均值/标准差归一化，保持奖励信号尺度一致。
-    纯 PyTorch 实现，无 GPU↔CPU 拷贝。
-    """
-
-    def __init__(self, epsilon=1e-5, clip_range=10.0):
-        self.mean = 0.0
-        self.var = 1.0
-        self.count = epsilon
-        self.epsilon = epsilon
-        self.clip_range = clip_range
-
-    def update(self, x: torch.Tensor):
-        x_detach = x.detach()
-        batch_mean = x_detach.mean().item()
-        batch_var = x_detach.var().item()
-        batch_count = x_detach.numel()
-
-        delta = batch_mean - self.mean
-        total_count = self.count + batch_count
-
-        self.mean += delta * batch_count / total_count
-        M2 = self.var * self.count + batch_var * batch_count + delta**2 * self.count * batch_count / total_count
-        self.var = M2 / total_count
-        self.count = total_count
-
-    def normalize(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.clamp(
-            (x - self.mean) / (self.var**0.5 + self.epsilon),
-            -self.clip_range,
-            self.clip_range,
-        )
-
-    def __call__(self, x: torch.Tensor, update: bool = False) -> torch.Tensor:
-        if update:
-            self.update(x)
-        return self.normalize(x)
-
-
-class WarmupScheduler:
-    """
-    线性 warmup 学习率调度器。
-    warmup 期间 LR 从 min_lr 线性增长到 base_lr，
-    warmup 完成后为 no-op，由 KL 自适应调度接管。
-    """
-
-    def __init__(self, optimizer: torch.optim.Optimizer, warmup_steps: int, base_lr: float, min_lr: float = 5e-5):
-        self.optimizer = optimizer
-        self.warmup_steps = warmup_steps
-        self.base_lr = base_lr
-        self.min_lr = min_lr
-        self.current_step = 0
-        self._warmup_done = False
-
-    def step(self):
-        self.current_step += 1
-        if self.current_step <= self.warmup_steps:
-            progress = self.current_step / self.warmup_steps
-            lr = self.min_lr + (self.base_lr - self.min_lr) * progress
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr
-        elif not self._warmup_done:
-            for param_group in self.optimizer.param_groups:
-                param_group["lr"] = self.base_lr
-            self._warmup_done = True
-
-    def is_warmup_done(self) -> bool:
-        return self.current_step > self.warmup_steps
-
-    def get_lr(self) -> float:
-        return self.optimizer.param_groups[0]["lr"]
-
-
 class AlgorithmPPO:
     """
     PPO algorithm for training locomotion policies
@@ -105,26 +31,65 @@ class AlgorithmPPO:
         device: torch.device = None,
         logger: Any = None,
         monitor: Any = None,
-        # PPO hyperparameters
+        # PPO hyperparameters (optimized for navigation)
+        # PPO超参数（针对导航优化）
         clip_param: float = 0.2,
         gamma: float = 0.99,
         lam: float = 0.95,
         value_loss_coef: float = 1.0,
-        entropy_coef: float = 0.01,
+        entropy_coef: float = 0.04,  # Balanced exploration vs convergence
         learning_rate: float = 1e-3,
         max_grad_norm: float = 1.0,
         use_clipped_value_loss: bool = True,
         normalize_value_loss: bool = True,
         num_mini_batches: int = 4,
-        num_learning_epochs: int = 5,
+        num_learning_epochs: int = 10,
         desired_kl: float = 0.01,
         schedule: str = "adaptive",
-        # 奖励归一化 & LR warmup
-        use_reward_norm: bool = True,
-        warmup_steps: int = 50,
-        min_lr: float = 5e-5,
         **kwargs,
     ):
+        """
+        Initialize PPO algorithm
+        初始化PPO算法
+
+        Args:
+            model: Actor-critic network (ActorCritic or ActorCriticEncoder)
+            model: Actor-Critic网络（ActorCritic或ActorCriticEncoder）
+            optimizer: Optimizer for model parameters
+            optimizer: 模型参数优化器
+            device: Device for computation
+            device: 计算设备
+            logger: Logger for metrics
+            logger: 指标日志记录器
+            monitor: Monitor for performance tracking
+            monitor: 性能监控器
+            clip_param: PPO clip parameter (epsilon)
+            clip_param: PPO裁剪参数（epsilon）
+            gamma: Discount factor
+            gamma: 折扣因子
+            lam: GAE lambda parameter
+            lam: GAE lambda参数
+            value_loss_coef: Coefficient for value loss
+            value_loss_coef: 价值损失系数
+            entropy_coef: Coefficient for entropy bonus
+            entropy_coef: 熵奖励系数
+            learning_rate: Initial learning rate
+            learning_rate: 初始学习率
+            max_grad_norm: Max gradient norm for clipping
+            max_grad_norm: 梯度裁剪最大范数
+            use_clipped_value_loss: Whether to clip value loss
+            use_clipped_value_loss: 是否裁剪价值损失
+            normalize_value_loss: Whether to normalize value loss by returns variance
+            normalize_value_loss: 是否按回报方差归一化价值损失
+            num_mini_batches: Number of mini-batches per epoch
+            num_mini_batches: 每个epoch的mini-batch数量
+            num_learning_epochs: Number of epochs per update
+            num_learning_epochs: 每次更新的epoch数量
+            desired_kl: Target KL divergence for adaptive learning rate
+            desired_kl: 自适应学习率的目标KL散度
+            schedule: Learning rate schedule ("adaptive" or "fixed")
+            schedule: 学习率调度策略（"adaptive"或"fixed"）
+        """
         self.device = device
         self.actor_critic = model
         self.optimizer = optimizer
@@ -147,23 +112,18 @@ class AlgorithmPPO:
         self.desired_kl = desired_kl
         self.schedule = schedule
 
-        # Reward normalization
-        # 奖励归一化
-        self.use_reward_norm = use_reward_norm
-        if use_reward_norm:
-            self.reward_norm = RunningMeanStdReward(epsilon=1e-5, clip_range=10.0)
-        else:
-            self.reward_norm = None
-
-        # LR warmup scheduler (takes over before KL adaptive schedule)
-        # LR warmup 调度器（在 KL 自适应之前接管）
-        self.warmup_scheduler = WarmupScheduler(optimizer, warmup_steps, learning_rate, min_lr)
-
         # Minimum std clamp (prevents std from going negative / too small)
         # 标准差下限（防止标准差变为负值或过小）
         from agent_ppo.conf.conf import Config
 
         self.min_std = torch.tensor(Config.CURRENT.min_normalized_std, device=device)
+
+        # Reward normalization statistics (running mean/std for reward scaling)
+        # 奖励归一化统计量（运行均值/标准差用于奖励缩放）
+        self.rew_mean = 0.0
+        self.rew_std = 1.0
+        self.rew_decay = 0.99  # EMA decay for reward statistics
+        self.rew_clip = 10.0   # Clip per-step reward to [-rew_clip, rew_clip]
 
         # Training state
         # 训练状态
@@ -173,15 +133,6 @@ class AlgorithmPPO:
         # Storage (to be initialized)
         # 存储（待初始化）
         self.storage = None
-
-    def normalize_reward(self, rewards: torch.Tensor, update: bool = False) -> torch.Tensor:
-        """
-        归一化奖励张量，保持不同 reward term 的尺度一致性。
-        未启用时原样返回。
-        """
-        if self.reward_norm is None:
-            return rewards
-        return self.reward_norm(rewards, update=update)
 
     def init_storage(
         self,
@@ -255,19 +206,65 @@ class AlgorithmPPO:
 
         return actions, values, log_probs, action_mean, action_std
 
-    def compute_returns(self, last_obs: torch.Tensor):
+    def normalize_rewards(self):
         """
-        Compute returns and advantages using GAE
-        使用GAE方法计算回报和优势函数
+        Normalize rewards in storage before GAE computation.
+        在 GAE 计算前归一化 storage 中的奖励。
+
+        This is called by the workflow before storage.compute_returns().
+        The normalization uses running EMA statistics to scale rewards,
+        preventing exploding advantage values from large raw reward scales.
+        这由 workflow 在 storage.compute_returns() 之前调用。
+        归一化使用运行 EMA 统计量缩放奖励，防止大原始奖励尺度导致优势值爆炸。
+
+        Returns:
+            torch.Tensor: backup of original rewards for restoration after GAE.
+            返回值：原始奖励备份，用于 GAE 后恢复。
+        """
+        raw_rewards = self.storage.rewards.clone()
+        self._update_reward_norm_stats(raw_rewards)
+        normalized_rewards = self._normalize_rewards(raw_rewards)
+        self.storage.rewards.copy_(normalized_rewards)
+        return raw_rewards
+
+    def restore_rewards(self, raw_rewards: torch.Tensor):
+        """
+        Restore original rewards after GAE computation for logging.
+        GAE 计算后恢复原始奖励用于日志记录。
 
         Args:
-            last_obs: Observations from the last step (for bootstrap value)
-            last_obs: 最后一步的观测（用于引导值计算）
+            raw_rewards: Original rewards saved before normalization.
+            raw_rewards: 归一化前保存的原始奖励。
         """
-        with torch.no_grad():
-            last_values = self.actor_critic.evaluate(last_obs)
+        self.storage.rewards.copy_(raw_rewards)
 
-        self.storage.compute_returns(last_values, self.gamma, self.lam)
+    def _update_reward_norm_stats(self, rewards: torch.Tensor):
+        """
+        Update running statistics of rewards using EMA.
+        使用 EMA 更新奖励的运行统计量。
+        """
+        batch_mean = rewards.mean().item()
+        batch_std = rewards.std().item()
+        # Protect against zero std on first steps
+        # 防止初始步 std 为零
+        if batch_std < 1e-6:
+            batch_std = 1.0
+        self.rew_mean = self.rew_decay * self.rew_mean + (1 - self.rew_decay) * batch_mean
+        self.rew_std = self.rew_decay * self.rew_std + (1 - self.rew_decay) * batch_std
+
+    def _normalize_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize rewards: clip, then normalize by running std.
+        归一化奖励：裁剪，然后用运行 std 归一化。
+        """
+        # Clip extreme rewards to prevent gradient explosion
+        # 裁剪极端奖励防止梯度爆炸
+        rewards = torch.clamp(rewards, -self.rew_clip, self.rew_clip)
+        # Normalize by running std (not mean-centering to preserve reward sign)
+        # 用运行 std 归一化（不去均值以保持奖励符号）
+        if self.rew_std > 1e-6:
+            rewards = rewards / self.rew_std
+        return rewards
 
     def learn(self) -> tuple:
         """
@@ -409,10 +406,6 @@ class AlgorithmPPO:
         mean_surrogate_loss /= num_updates
         mean_entropy_loss /= num_updates
 
-        # Step LR warmup scheduler (no-op after warmup completes)
-        # 更新 LR warmup 调度器（warmup 完成后为 no-op）
-        self.warmup_scheduler.step()
-
         # Report metrics
         # 上报指标
         self._report_training_metrics(mean_surrogate_loss, mean_value_loss, mean_entropy_loss)
@@ -429,12 +422,8 @@ class AlgorithmPPO:
     ):
         """
         Adaptively update learning rate based on KL divergence
-        基于KL散度自适应更新学习率（warmup 期间跳过）
+        基于KL散度自适应更新学习率
         """
-        # During warmup, let the warmup scheduler control LR
-        # Warmup 期间由 warmup 调度器控制 LR
-        if not self.warmup_scheduler.is_warmup_done():
-            return
         if self.desired_kl is None or self.schedule != "adaptive":
             return
 
@@ -518,7 +507,7 @@ class AlgorithmPPO:
                 "value_loss": mean_value_loss,
                 "entropy_loss": mean_entropy_loss,
                 "total_loss": mean_surrogate_loss + mean_value_loss + mean_entropy_loss,
-                "learning_rate": self.warmup_scheduler.get_lr(),
+                "learning_rate": self.learning_rate,
             }
             if self.monitor:
                 self.monitor.put_data({os.getpid(): monitor_data})
