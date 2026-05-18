@@ -52,7 +52,9 @@ def obs_normalizer(obs):
     Observation normalizer function
     观测归一化函数
     """
-    pass
+    if isinstance(obs, torch.Tensor):
+        return torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+    return obs
 
 
 class RolloutStorage:

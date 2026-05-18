@@ -139,13 +139,13 @@ class Algorithm:
 
         # PPO hyperparameters - dynamically load from stage config
         # PPO超参数 - 从stage配置动态加载
-        self.clip_param = 0.2
-        self.gamma = 0.99
-        self.lam = 0.95
+        self.clip_param = getattr(self.stage, "clip_param", 0.2)
+        self.gamma = getattr(self.stage, "gamma", 0.99)
+        self.lam = getattr(self.stage, "lam", 0.95)
         self.value_loss_coef = 1.0
-        self.entropy_coef = 0.01
-        self.learning_rate = getattr(self.stage, 'lr', 3e-4)  # 从stage配置获取学习率
-        self.max_grad_norm = 1.0
+        self.entropy_coef = getattr(self.stage, "entropy_coef", 0.01)
+        self.learning_rate = getattr(self.stage, "lr", 3e-4)
+        self.max_grad_norm = getattr(self.stage, "max_grad_norm", 0.75)
         self.num_mini_batches = getattr(self.stage, 'num_mini_batches', 4)
         self.num_learning_epochs = getattr(self.stage, 'num_learning_epochs', 5)
         self.desired_kl = 0.01
@@ -189,6 +189,25 @@ class Algorithm:
             self.total_training_steps,
             self.learning_rate,
             self.min_learning_rate
+        )
+
+    def init_storage(
+        self,
+        num_envs,
+        num_transitions_per_env,
+        actor_obs_shape,
+        critic_obs_shape,
+        action_shape,
+        device=None,
+    ):
+        device = device or self.device
+        self.storage = RolloutStorage(
+            num_envs=num_envs,
+            num_transitions_per_env=num_transitions_per_env,
+            obs_shape=actor_obs_shape,
+            privileged_obs_shape=critic_obs_shape,
+            actions_shape=action_shape,
+            device=device,
         )
 
     def act(self, obs, critic_obs):
@@ -281,6 +300,8 @@ class Algorithm:
         Compute PPO surrogate loss with clipping
         计算带裁剪的PPO替代损失
         """
+        old_log_probs = old_log_probs.squeeze(-1)
+        advantages = advantages.squeeze(-1)
         ratio = torch.exp(new_log_probs - old_log_probs)
         surrogate = ratio * advantages
         surrogate_clipped = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages
@@ -439,6 +460,8 @@ class Algorithm:
 
         # Calculate policy loss with clipping
         # 计算带裁剪的策略损失
+        old_actions_log_prob_batch = old_actions_log_prob_batch.squeeze(-1)
+        advantages_batch = advantages_batch.squeeze(-1)
         ratio = torch.exp(new_actions_log_prob - old_actions_log_prob_batch)
         surr1 = ratio * advantages_batch
         surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * advantages_batch
@@ -452,11 +475,21 @@ class Algorithm:
         # Combine losses
         # 组合损失
         loss = policy_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+        if not torch.isfinite(loss):
+            if self.logger:
+                self.logger.warning("[DIY PPO] Non-finite loss, skipping mini-batch update")
+            return 0.0, 0.0, 0.0
 
         # Backpropagate
         # 反向传播
         self.optimizer.zero_grad()
         loss.backward()
+        for param in self.model.parameters():
+            if param.grad is not None and not torch.isfinite(param.grad).all():
+                self.optimizer.zero_grad()
+                if self.logger:
+                    self.logger.warning("[DIY PPO] Non-finite gradient, skipping optimizer step")
+                return 0.0, 0.0, 0.0
 
         # Clip gradients
         # 梯度裁剪
@@ -465,6 +498,15 @@ class Algorithm:
         # Step optimizer
         # 优化器更新
         self.optimizer.step()
+
+        network = getattr(self.model, "network", self.model)
+        if hasattr(network, "std"):
+            min_std = torch.tensor(
+                getattr(self.stage, "min_normalized_std", [0.02] * network.std.numel()),
+                device=self.device,
+            )
+            safe_std = torch.nan_to_num(network.std.data, nan=0.5, posinf=1.0, neginf=0.0)
+            network.std.data.copy_(torch.clamp(safe_std, min=min_std))
 
         return policy_loss.item(), value_loss.item(), entropy.mean().item()
 

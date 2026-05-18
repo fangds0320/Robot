@@ -54,7 +54,7 @@ num_cols = 10
 
 # Difficulty range [min, max], valid range: [0.0, 1.0].
 # 难度范围 [min, max]，合法范围：[0.0, 1.0]
-difficulty_range = [0.0, 1.0]
+difficulty_range = [0.0, 0.35]
 
 # Whether to enable terrain curriculum (promote/demote difficulty by performance).
 # 是否启用地形课程学习（按表现晋级/降级难度）
@@ -84,19 +84,19 @@ sub_terrains = ["pyramid_slope", "pyramid_slope_inv", "pyramid_stairs", "pyramid
 [domain_rand]
 # Master switch for domain randomization.
 # 域随机化总开关
-enable_domain_rand = true
+enable_domain_rand = false
 
 # Whether to randomize ground friction.
 # 是否随机化地面摩擦系数
-randomize_friction = true
+randomize_friction = false
 
 # Friction range [min, max], must be >= 0.
 # 摩擦系数采样范围 [min, max]，必须 >= 0
-friction_range = [0.3, 1.5]
+friction_range = [0.8, 1.2]
 
 # Whether to periodically push the robot.
 # 是否周期性对机器人施加外部推力
-push_robots = true
+push_robots = false
 
 # Push interval (seconds), must be > 0.
 # 推力间隔（秒），必须 > 0
@@ -112,7 +112,7 @@ max_push_vel_xy = 0.5
 [noise]
 # Whether to add noise to observations.
 # 是否在观测中加入噪声
-add_noise = true
+add_noise = false
 
 
 # === Initial State ===
@@ -154,13 +154,13 @@ ang_vel_z = [-1.5, 1.5]
 
 # Normal forward speed.
 # 常规前进
-lin_vel_x = [0.0, 0.5]
+lin_vel_x = [0.15, 0.45]
 
 # Narrowed lateral.
 # 收窄侧向
-lin_vel_y = [-0.15, 0.15]
+lin_vel_y = [-0.05, 0.05]
 
-ang_vel_yaw = [-1.0, 1.0]
+ang_vel_yaw = [-0.5, 0.5]
 
 
 # =====================================================================
@@ -311,7 +311,7 @@ command_name = "base_velocity"
 # Main navigation: the only positive nav signal (clear ahead → towards goal; blocked → by clearance).
 # 主导航：唯一的正向导航信号（前方通 → 朝 goal；堵 → 按 clearance 走）
 [rewards.heuristic_navigation]
-weight = 8.0
+weight = 10.0
 [rewards.heuristic_navigation.params]
 # Obstacle threshold (height delta in meters, negative = wall/pit).
 # 障碍判定阈值（高度差，米，负值 = 下凹/墙）
@@ -334,10 +334,24 @@ weight = -3.0
 [rewards.wall_proximity_brake.params]
 obstacle_threshold = -0.3
 
+[rewards.velocity_toward_goal]
+weight = 1.5
+
+[rewards.goal_heading]
+weight = 0.6
+
+[rewards.goal_proximity]
+weight = 0.2
+[rewards.goal_proximity.params]
+scale_m = 15.0
+
+[rewards.approach_goal]
+weight = 5.0
+
 # Reach-goal bonus (one-shot large reward when distance < threshold).
 # 到达目标奖励（距离 < threshold 一次性大奖）
 [rewards.reach_goal]
-weight = 10.0
+weight = 50.0
 [rewards.reach_goal.params]
 # Reach threshold (m). Must equal `_goal_reached_termination` threshold
 # in velocity_env_cfg.py; mismatch causes a dead zone (terminated but

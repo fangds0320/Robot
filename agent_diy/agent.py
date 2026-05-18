@@ -53,17 +53,9 @@ class Agent(BaseAgent):
         num_proprio = stage.num_proprio_obs
         num_scan = stage.num_scan
 
-        # policy obs = proprio + scan
-        # 策略观测 = 本体感知 + 扫描
-        self.num_obs = num_proprio + num_scan
-
-        # Check for track mode additional dimensions
-        # 检查track模式的额外维度
-        if stage.task_type == "track":
-            # Track mode adds goal information: goal_pos(3) + goal_yaw(1)
-            # Track模式添加目标信息：goal_pos(3) + goal_yaw(1)
-            self.num_obs += 4
-            self.num_critic_obs += 4
+        num_goal = getattr(stage, "num_goal_obs", 0)
+        self.num_obs = num_proprio + num_scan + num_goal
+        self.num_critic_obs = stage.num_critic_observations + num_goal
 
         # Initialize enhanced model
         # 初始化增强模型
@@ -85,7 +77,8 @@ class Agent(BaseAgent):
 
         # Convert to channel-last memory format for better performance
         # 转换为通道最后内存格式以获得更好的性能
-        self.model = self.model.to(memory_format=torch.channels_last)
+        # Linear MLP parameters do not benefit from channels_last and some runtimes
+        # reject memory_format conversion for non-4D tensors.
 
         self.logger.info(f"Enhanced Actor-Critic model initialized")
         self.logger.info(f"Enhanced features: residual={getattr(stage, 'use_residual', True)}, "
@@ -137,17 +130,13 @@ class Agent(BaseAgent):
         Exploit learned policy for action selection
         利用已学习的策略进行动作选择
         """
-        (obs, critic_obs) = list_obs_data
+        if isinstance(list_obs_data, (list, tuple)) and len(list_obs_data) == 2:
+            obs, critic_obs = list_obs_data
+        else:
+            obs = list_obs_data[0] if isinstance(list_obs_data, (list, tuple)) else list_obs_data
+            critic_obs = obs
         with torch.no_grad():
-            (
-                actions,
-                values,
-                log_probs,
-                action_mean,
-                action_std,
-                observations,
-                critic_observations,
-            ) = self.algorithm.act(obs, critic_obs)
+            actions = self.model.act_inference(obs.to(self.device))
 
         return [ActData(action=actions)]
 
@@ -234,14 +223,20 @@ class Agent(BaseAgent):
         Process action data
         处理动作数据
         """
-        pass
+        action = act_data.action if hasattr(act_data, "action") else act_data
+        if isinstance(action, torch.Tensor):
+            return torch.clamp(action, -6.0, 6.0)
+        return action
 
     def observation_process(self, obs_q):
-        pass
+        if isinstance(obs_q, torch.Tensor):
+            return torch.nan_to_num(obs_q.to(self.device), nan=0.0, posinf=0.0, neginf=0.0)
+        return obs_q
 
     def reset(self):
         """
         Reset agent state
         重置智能体状态
         """
-        pass
+        if hasattr(self, "model"):
+            self.model.reset()

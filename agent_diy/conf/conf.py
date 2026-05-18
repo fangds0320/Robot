@@ -149,6 +149,8 @@ class TrackConfig(StageConfig):
     """
     Stage: track navigation — learn obstacle avoidance and navigation on track terrain.
     阶段：track导航 —— 在赛道地形上学障碍规避和导航。
+
+    阶段2：在 EnhancedLocomotion 预训练后切换 CURRENT = TrackConfig，并 load 阶段1 checkpoint。
     """
 
     name = "nav"
@@ -167,10 +169,13 @@ class TrackConfig(StageConfig):
 
     # --- Training hyperparameters for track mode
     # 赛道模式训练超参数 ---
-    lr = 1e-4  # Lower learning rate for navigation tasks
+    lr = 1e-4
+    gamma = 0.998
+    lam = 0.95
+    entropy_coef = 0.008
     num_learning_epochs = 5
     num_mini_batches = 4
-    num_steps_per_env = 48
+    num_steps_per_env = 64
     min_normalized_std = [0.05, 0.02, 0.05] * 4
 
 
@@ -182,6 +187,7 @@ class HierarchicalConfig(StageConfig):
 
     name = "hier_nav"
     task_type = "track"
+    num_goal_obs = 4
 
     # --- Enhanced Model architecture for hierarchical training
     # 适用于分层训练的增强模型架构 ---
@@ -214,13 +220,13 @@ class Config:
     ``Config.CURRENT.lr``、``Config.CURRENT.num_mini_batches`` 等读取超参数。
     """
 
-    # Switch stage by changing CURRENT
-    # 通过修改 CURRENT 切换阶段
-    # CURRENT = LocomotionConfig          # 基线 locomotion 配置（standard 模式）
-    CURRENT = EnhancedLocomotionConfig   # 增强 locomotion 配置（standard 模式）
-    # CURRENT = TrackConfig               # track 导航配置（track 模式）
-    # CURRENT = HierarchicalConfig        # 分层训练配置（track 模式）
-    # CURRENT = CustomConfig              # 用户自定义配置
+    # Switch stage by changing CURRENT（两阶段课程训练）
+    # 阶段1 Standard：EnhancedLocomotionConfig + train_env_conf_standard_locomotion.toml
+    # 阶段2 Track：  TrackConfig + train_env_conf_track_nav.toml（需 load 阶段1 权重）
+    # CURRENT = EnhancedLocomotionConfig   # ← 阶段1：先训这个
+    CURRENT = TrackConfig               # ← 阶段2：locomotion 稳定后改这里
+    # CURRENT = HierarchicalConfig        # 可选：分层 track（进阶）
+    # CURRENT = CustomConfig
 
     @staticmethod
     def load_conf(logger):

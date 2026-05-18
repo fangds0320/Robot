@@ -36,7 +36,7 @@ class RunningMeanStd(nn.Module):
 
     def update(self, x):
         batch_mean = x.mean(dim=0)
-        batch_var = x.var(dim=0)
+        batch_var = x.var(dim=0, unbiased=False)
         batch_count = x.shape[0]
 
         delta = batch_mean - self.mean
@@ -317,14 +317,17 @@ class EnhancedActorCritic(nn.Module):
         Reset hidden states for terminated episodes
         重置已终止episode的隐藏状态
         """
-        pass
+        return None
 
-    def forward(self):
+    def forward(self, obs: torch.Tensor, critic_obs: torch.Tensor | None = None, update_norm: bool = False):
         """
         Forward pass (not implemented, use act/evaluate instead)
         前向传播（未实现，请使用act/evaluate方法）
         """
-        raise NotImplementedError
+        if critic_obs is None:
+            critic_obs = obs
+        self.update_distribution(obs, update_norm=update_norm)
+        return self.action_mean, self.evaluate(critic_obs, update_norm=update_norm)
 
     @property
     def action_mean(self):
@@ -460,18 +463,9 @@ def create_enhanced_model():
     obs_normalization = getattr(stage, 'obs_normalization', True)
     reward_normalization = getattr(stage, 'reward_normalization', True)
 
-    # Determine number of observations based on task type
-    # 根据任务类型确定观测维度
-    if stage.task_type == "standard":
-        num_obs = stage.num_proprio_obs + stage.num_scan
-        num_critic_obs = stage.num_critic_observations
-    elif stage.task_type == "track":
-        # Track mode adds goal information
-        # Track模式添加目标信息
-        num_obs = stage.num_proprio_obs + stage.num_scan + 4  # goal_pos(3) + goal_yaw(1)
-        num_critic_obs = stage.num_critic_observations + 4
-    else:
-        raise ValueError(f"Unknown task_type: {stage.task_type}")
+    num_goal = getattr(stage, "num_goal_obs", 0)
+    num_obs = stage.num_proprio_obs + stage.num_scan + num_goal
+    num_critic_obs = stage.num_critic_observations + num_goal
 
     model = EnhancedActorCritic(
         num_obs=num_obs,
@@ -480,6 +474,7 @@ def create_enhanced_model():
         actor_hidden_dims=stage.actor_hidden_dims,
         critic_hidden_dims=stage.critic_hidden_dims,
         activation=stage.activation,
+        init_noise_std=getattr(stage, "init_noise_std", 0.65),
         use_residual=use_residual,
         use_layernorm_per_layer=use_layernorm_per_layer,
         obs_normalization=obs_normalization,
@@ -524,11 +519,11 @@ class Model(nn.Module):
         # 用户自定义网络
         self.network = create_model()
 
-    def forward(self):
+    def forward(self, obs: torch.Tensor, critic_obs: torch.Tensor | None = None, update_norm: bool = False):
         """Forward pass (not implemented, use act/evaluate instead)
         前向传播（未实现，请使用act/evaluate方法）
         """
-        raise NotImplementedError
+        return self.network.forward(obs, critic_obs=critic_obs, update_norm=update_norm)
 
     def act(self, obs: torch.Tensor, update_norm=False, **kwargs):
         """Sample actions from policy
