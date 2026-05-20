@@ -80,14 +80,14 @@ class RewardProcess(RewardProcessBase):
     def _reward_joint_torques(self):
         try:
             asset = self._get_robot_asset()
-            return torch.sum(torch.square(asset.data.joint_torque), dim=1)
+            return torch.sum(torch.square(asset.data.applied_torque), dim=1)
         except Exception:
             return self._zeros()
 
     def _reward_energy(self):
         try:
             asset = self._get_robot_asset()
-            return torch.sum(torch.abs(asset.data.joint_torque * asset.data.joint_vel), dim=1)
+            return torch.sum(torch.abs(asset.data.applied_torque * asset.data.joint_vel), dim=1)
         except Exception:
             return self._zeros()
 
@@ -493,7 +493,7 @@ class RewardProcess(RewardProcessBase):
         self.env._previous_goal_dist = current_dist.clone()
         return -delta_dist
 
-    def _reward_reach_goal(self, threshold: float = 0.5):
+    def _reward_reach_goal(self, threshold: float = 0.6):
         """Reward reaching the maze exit (distance < threshold).
 
         到达迷宫出口奖励（距离 < 阈值时返回 1.0）。
@@ -501,6 +501,8 @@ class RewardProcess(RewardProcessBase):
         Args:
             threshold: Distance threshold to consider goal reached (m).
                        判定到达目标的距离阈值（米）。
+                       必须与 velocity_env_cfg.py 中 _goal_reached_termination 的
+                       threshold 一致，否则产生"死区"。
         """
         if not hasattr(self.env, "goal_positions") or self.env.goal_positions is None:
             return torch.zeros(self.env.num_envs, device=self.env.device)
@@ -530,15 +532,20 @@ class RewardProcess(RewardProcessBase):
             Float tensor (num_envs,): 1.0 for real failures, 0.0 otherwise.
             浮点张量 (num_envs,)：真实失败返回 1.0，其他情况返回 0.0。
         """
-        term_mgr = self.env.termination_manager
-        failure = term_mgr.terminated & ~term_mgr.time_outs
+        try:
+            term_mgr = self.env.termination_manager
+            if not hasattr(term_mgr, "terminated") or not hasattr(term_mgr, "time_outs"):
+                return self._zeros()
+            failure = term_mgr.terminated & ~term_mgr.time_outs
 
-        # 排除 goal_reached（导航成功不应被惩罚）
-        if "goal_reached" in term_mgr.active_terms:
-            goal_done = term_mgr.get_term("goal_reached")
-            failure = failure & ~goal_done
+            # 排除 goal_reached（导航成功不应被惩罚）
+            if hasattr(term_mgr, "active_terms") and "goal_reached" in term_mgr.active_terms:
+                goal_done = term_mgr.get_term("goal_reached")
+                failure = failure & ~goal_done
 
-        return failure.float()
+            return failure.float()
+        except Exception:
+            return self._zeros()
 
     # -----------------------------------------------------------------------
     # Enhanced 8 reward functions aligned with scoring system
@@ -570,7 +577,7 @@ class RewardProcess(RewardProcessBase):
         """
         # Constant penalty per step
         # 每步固定惩罚
-        return torch.full((self.env.num_envs,), -time_penalty, device=self.env.device)
+        return torch.full((self.env.num_envs,), 1.0-time_penalty, device=self.env.device)
 
     def _reward_energy_efficiency(self, power_scale: float = 1.0):
         """
@@ -584,7 +591,7 @@ class RewardProcess(RewardProcessBase):
         asset = self._get_robot_asset()
         # Compute mechanical power: torque * velocity
         # 计算机械功率：扭矩 × 速度
-        power = torch.sum(torch.abs(asset.data.joint_torque * asset.data.joint_vel), dim=1)
+        power = torch.sum(torch.abs(asset.data.applied_torque * asset.data.joint_vel), dim=1)
         # Exponential decay of power (lower power = higher reward)
         # 功率的指数衰减（功率越低奖励越高）
         energy_reward = torch.exp(-power * power_scale)
@@ -750,44 +757,34 @@ class RewardProcess(RewardProcessBase):
     # Combined score-aligned reward for Track Mode
     def _reward_track_score_aligned(self, completion_factor=1.0):
         """
-        Combined reward aligned with Track Mode scoring system:
-        total_score = completion_factor × (0.4 × time_score + 0.4 × pose_score + 0.2 × energy_score)
-
-        与Track模式评分系统对齐的组合奖励
+        严格按照赛题公式：
+        total_score = completion_factor × (0.4×time + 0.4×pose + 0.2×energy)
+        修复：初始完成系数不会为0
         """
-        time_reward = self._reward_time_efficiency(time_penalty=0.01)
-        pose_reward = self._reward_pose_stability(orientation_scale=10.0)
-        energy_reward = self._reward_energy_efficiency(power_scale=0.2)
+        # 1. 三个标准得分（归一化 0~1）
+        time_score = torch.clamp(self._reward_time_efficiency(time_penalty=0.01), 0.0, 1.0)
+        pose_score = torch.clamp(self._reward_pose_stability(orientation_scale=10.0), 0.0, 1.0)
+        energy_score = torch.clamp(self._reward_energy_efficiency(power_scale=0.2), 0.0, 1.0)
 
-        # Base combination
-        # 基础组合
-        base_reward = (
-            0.4 * time_reward +
-            0.4 * pose_reward +
-            0.2 * energy_reward
-        )
+        # 2. 赛题公式
+        base_score = 0.4 * time_score + 0.4 * pose_score + 0.2 * energy_score
 
-        # Apply completion factor (depends on task progress)
-        # 应用完成因子（取决于任务进度）
+        # 3. 进度因子（修复：不会变成0）
         if hasattr(self.env, 'goal_positions') and self.env.goal_positions is not None:
             robot = self._get_robot_asset()
             robot_pos = robot.data.root_pos_w[:, :2]
             goal_pos = self.env.goal_positions[:, :2]
             distance = torch.norm(goal_pos - robot_pos, dim=1)
 
-            # Simple progress estimation based on distance
-            # 基于距离的简单进度估计
-            max_distance = 10.0  # Assume maximum distance
-            progress = 1.0 - torch.clamp(distance / max_distance, 0.0, 1.0)
-            completion_factor = progress
+            max_track_distance = 20.0
+            progress = 1.0 - torch.clamp(distance / max_track_distance, 0.0, 1.0)
 
-        total_reward = completion_factor * base_reward
+            # 🔥 核心修复：保证最小 0.1，绝不归零
+            completion_factor = torch.clamp(progress, min=0.1, max=1.0)
+        else:
+            completion_factor = 0.1
 
-        # Add navigation-specific rewards
-        # 添加导航特定的奖励
-        forward_reward = self._reward_forward_distance(scale=1.0)
-        avoidance_reward = self._reward_obstacle_avoidance_bonus(clearance_threshold=0.4, scale=1.0)
+        # 4. 严格遵守赛题公式输出
+        total_score = completion_factor * base_score
 
-        total_reward += 0.2 * (forward_reward + avoidance_reward)
-
-        return total_reward
+        return total_score

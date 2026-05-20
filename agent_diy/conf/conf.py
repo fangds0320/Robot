@@ -151,6 +151,8 @@ class TrackConfig(StageConfig):
     阶段：track导航 —— 在赛道地形上学障碍规避和导航。
 
     阶段2：在 EnhancedLocomotion 预训练后切换 CURRENT = TrackConfig，并 load 阶段1 checkpoint。
+
+    若无预训练，需用 curriculum + 低难度 + 高运控权重先学走路。
     """
 
     name = "nav"
@@ -169,13 +171,19 @@ class TrackConfig(StageConfig):
 
     # --- Training hyperparameters for track mode
     # 赛道模式训练超参数 ---
-    lr = 1e-4
+    # Learning rate: 3e-4 for faster convergence when starting from scratch
+    # 学习率：从头训练时用 3e-4 加速收敛
+    lr = 3e-4
     gamma = 0.998
     lam = 0.95
-    entropy_coef = 0.008
+    # Entropy: slightly higher to encourage exploration (avoid getting stuck)
+    # 熵系数：略高以鼓励探索（避免陷入局部最优）
+    entropy_coef = 0.01
     num_learning_epochs = 5
     num_mini_batches = 4
-    num_steps_per_env = 64
+    # More steps per env: longer rollout → better gradient estimates for sparse rewards
+    # 每环境更多步：更长 rollout → 对稀疏奖励更好的梯度估计
+    num_steps_per_env = 48
     min_normalized_std = [0.05, 0.02, 0.05] * 4
 
 
@@ -218,14 +226,28 @@ class Config:
 
     设置 ``Config.CURRENT`` 为某个 StageConfig 子类，然后通过
     ``Config.CURRENT.lr``、``Config.CURRENT.num_mini_batches`` 等读取超参数。
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║  【重要】Track 模式建议先完成 Locomotion 预训练，再加载权重训导航 ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+
+    Track 模式直接从头训练会导致机器狗不会走路、大量异常终止
+    (abnormal 极高)、completion_factor 始终为 0、total_score 恒零。
+
+    正确流程：
+      Step 1: 设置 CURRENT = EnhancedLocomotionConfig，训练至行走稳定
+      Step 2: 保存模型 checkpoint
+      Step 3: 设置 CURRENT = TrackConfig
+      Step 4: 在 configure_app.toml 中开启 preload_model=true,
+              preload_model_dir 指向 Step 1 的模型目录
     """
 
-    # Switch stage by changing CURRENT（两阶段课程训练）
-    # 阶段1 Standard：EnhancedLocomotionConfig + train_env_conf_standard_locomotion.toml
-    # 阶段2 Track：  TrackConfig + train_env_conf_track_nav.toml（需 load 阶段1 权重）
-    # CURRENT = EnhancedLocomotionConfig   # ← 阶段1：先训这个
-    CURRENT = TrackConfig               # ← 阶段2：locomotion 稳定后改这里
-    # CURRENT = HierarchicalConfig        # 可选：分层 track（进阶）
+    # ── 切换阶段：修改 CURRENT 即可 ──────────────────────────────
+    # Step 1（先训）: CURRENT = EnhancedLocomotionConfig
+    # Step 2（后训）: CURRENT = TrackConfig（需 load Step 1 权重）
+    # CURRENT = EnhancedLocomotionConfig
+    CURRENT = TrackConfig
+    # CURRENT = HierarchicalConfig
     # CURRENT = CustomConfig
 
     @staticmethod

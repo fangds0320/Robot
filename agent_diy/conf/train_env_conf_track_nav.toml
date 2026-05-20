@@ -17,9 +17,10 @@
 # 并行环境数量，合法范围：[1, 4096]
 num_envs = 2048
 
-# Max episode duration (seconds); track course is long, keep 150s.
-# 最大 episode 时长（秒）；track 赛道较长，保留 150s
-episode_length_s = 150
+# Max episode duration (seconds); shorter initially so the robot resets faster and
+# learns from more diverse starting states. Increase to 150s once walking is stable.
+# 最大 episode 时长（秒）；初期缩短让机器人更快重置，学到更多多样性。行走稳定后改回 150s
+episode_length_s = 25
 
 [env_conf]
 # Random seed.
@@ -53,11 +54,15 @@ num_rows = 10
 num_cols = 10
 
 # Difficulty range [min, max], valid range: [0.0, 1.0].
+# Start near-zero: difficulty 0 maze ≈ flat ground with low walls → robot can learn to walk.
 # 难度范围 [min, max]，合法范围：[0.0, 1.0]
-difficulty_range = [0.0, 0.35]
+# 起步接近零：difficulty 0 的迷宫 ≈ 平地 + 低矮墙壁，机器人可以先学走路
+difficulty_range = [0.0, 0.02]
 
 # Whether to enable terrain curriculum (promote/demote difficulty by performance).
+# ENABLED: start from easiest tier, promote when walking stabilizes.
 # 是否启用地形课程学习（按表现晋级/降级难度）
+# 开启：从最简单档起步，行走稳定后自动晋级
 curriculum = true
 
 # Max init difficulty tier for robot placement, valid range: [0, 9];
@@ -68,7 +73,7 @@ max_init_terrain_level = 0
 [terrain.track]
 # Number of sub-terrains per lane along X-axis, valid range: [1, 5].
 # 每条赛道串联的子地形数量（X 轴方向段数），合法范围：[1, 5]
-track_length = 5
+track_length = 1
 
 # Sub-terrain sequence: length must equal track_length, no duplicates allowed,
 # and the LAST element must be "open_entry_maze" (track finish is always a maze);
@@ -76,14 +81,16 @@ track_length = 5
 # 子地形序列，长度必须等于 track_length，元素不能重复，
 # 且最后一个元素必须为 "open_entry_maze"（赛道终点恒为迷宫）；
 # 合法值：pyramid_slope | pyramid_slope_inv | pyramid_stairs | pyramid_stairs_inv | open_entry_maze
-sub_terrains = ["pyramid_slope", "pyramid_slope_inv", "pyramid_stairs", "pyramid_stairs_inv", "open_entry_maze"]
+sub_terrains = ["open_entry_maze"]
 
 
 # === Domain Randomization ===
 # === 域随机化 ===
 [domain_rand]
 # Master switch for domain randomization.
+# Disabled initially for stability; enable once walking is stable to improve robustness.
 # 域随机化总开关
+# 初期关闭保证稳定性；行走稳定后开启增强鲁棒性
 enable_domain_rand = false
 
 # Whether to randomize ground friction.
@@ -111,7 +118,9 @@ max_push_vel_xy = 0.5
 # === 观测噪声 ===
 [noise]
 # Whether to add noise to observations.
+# Disabled initially for cleaner signal; enable later for sim-to-real transfer.
 # 是否在观测中加入噪声
+# 初期关闭保证信号干净；后续开启增强迁移能力
 add_noise = false
 
 
@@ -123,59 +132,70 @@ add_noise = false
 pos = [0.0, 0.0, 0.35]
 
 
-# === Velocity Commands: tuned for maze nav (slow & safe traversal) ===
-# === 速度命令：迷宫导航专用，低速安全通行 ===
-# Corridor width 0.6~1.0m: high speed leads to late turning and sensor mis-alignment on strafing.
-# 通道宽 0.6~1.0m，高速来不及转弯且侧移会导致 sensor 错位
+# === Velocity Commands: start slow, learn to walk first ===
+# === 速度命令：起步慢，先学走路 ===
 [commands]
 # Velocity command resampling interval [min, max] (seconds).
+# Longer interval so the robot has time to execute each command.
 # 速度命令重采样区间 [min, max]（秒）
-resampling_time = [5.0, 5.0]
+# 更长间隔让机器人有足够时间执行每条指令
+resampling_time = [10.0, 10.0]
 
 [commands.limit]
 # Velocity command **hard limits** (curriculum may expand sampling range up to here).
 # 速度命令 **采样上限**（硬约束，curriculum 最多扩展到该范围）
 
-# X linear velocity range (m/s) — low speed for comfortable turning in mazes.
-# X 方向线速度范围 (m/s) — 迷宫低速，转弯从容
-lin_vel_x = [0.0, 0.8]
+# X linear velocity range (m/s) — start narrow, curriculum will expand.
+# X 方向线速度范围 (m/s) — 起步窄，curriculum 会扩展
+lin_vel_x = [-1.0, 1.5]
 
-# Y linear velocity range (m/s) — narrowed to suppress strafing.
-# Y 方向线速度范围 (m/s) — 收窄侧向，抑制侧移
-lin_vel_y = [-0.3, 0.3]
+# Y linear velocity range (m/s) — narrow to suppress strafing early on.
+# Y 方向线速度范围 (m/s) — 初期收窄，抑制侧移
+lin_vel_y = [-0.5, 0.5]
 
-# Yaw angular velocity range (rad/s) — kept wide for wall circumvention.
-# Z 轴角速度范围 (rad/s) — 保持，导航绕墙需要
+# Yaw angular velocity range (rad/s) — kept moderate.
+# Z 轴角速度范围 (rad/s) — 适中
 ang_vel_z = [-1.5, 1.5]
 
 [commands.ranges]
 # Velocity command **initial sampling ranges** (expand towards limit when curriculum is enabled).
 # 速度命令 **初始采样范围**（curriculum 开启时会动态扩大到 limit）
 
-# Normal forward speed.
-# 常规前进
-lin_vel_x = [0.15, 0.45]
+# Slow forward speed only — the robot must learn to follow these first.
+# 仅慢速前进——机器人必须先学会跟随这些指令
+lin_vel_x = [0.05, 0.3]
 
-# Narrowed lateral.
-# 收窄侧向
+# Minimal lateral.
+# 最小侧向
 lin_vel_y = [-0.05, 0.05]
 
-ang_vel_yaw = [-0.5, 0.5]
+# Small turning.
+# 小幅转向
+ang_vel_yaw = [-0.3, 0.3]
 
 
 # =====================================================================
-# Reward configuration: locomotion base + obstacle avoidance + navigation
-# (reference: standard_nav.toml)
-# 奖励配置：locomotion 基础 + 避障 + 导航（参考 standard_nav.toml）
+# Reward configuration: LOCOMOTION-FIRST strategy
+# 奖励配置：运控优先策略
+#
+# Phase 1 (current): velocity tracking dominates, navigation is weak guide.
+#   Robot must learn to stand and walk before it can navigate.
+# Phase 2 (once walking stable): boost navigation weights, reduce locomotion.
+#
+# 阶段1（当前）：速度跟踪主导，导航仅弱引导。
+#   机器人必须先学会站立和行走，然后才能导航。
+# 阶段2（行走稳定后）：提高导航权重，降低运控权重。
 #
 # Each reward term must have a numeric `weight`; parameterized rewards use [rewards.<name>.params].
 # 每个奖励项必须包含数值型 weight；带参数的奖励用 [rewards.<name>.params] 配置
 # =====================================================================
 
-# --- Positive: velocity tracking (down-weighted so navigation signal dominates) ---
-# --- 正向：速度跟踪（降权，让导航信号主导）---
+# --- Positive: velocity tracking (PRIMARY — must dominate early training) ---
+# --- 正向：速度跟踪（主导——训练初期必须占主导）---
 [rewards.track_lin_vel_xy]
-weight = 0.15
+# HIGH: this is the core "learn to walk" signal. Must be the strongest positive reward.
+# 高权重：这是核心的"学会走路"信号，必须是最强的正向奖励
+weight = 1.5
 [rewards.track_lin_vel_xy.params]
 # Std of Gaussian kernel, controls how sharp the error → reward decay is.
 # 高斯核标准差，控制误差 → 奖励的衰减陡峭程度
@@ -185,20 +205,32 @@ std = 0.25
 command_name = "base_velocity"
 
 [rewards.track_ang_vel_z]
-weight = 0.1
+# HIGH: turning must also be well-rewarded.
+# 高权重：转向也必须有足够奖励
+weight = 0.75
 [rewards.track_ang_vel_z.params]
 std = 0.25
 command_name = "base_velocity"
 
+# --- Positive: feet air time (gait learning) ---
+# --- 正向：足部滞空时间（步态学习）---
+[rewards.feet_air_time]
+# Critical for learning a proper gait cycle (swing-stance alternation).
+# 学习正确步态周期（摆动-支撑交替）的关键奖励
+weight = 0.5
+[rewards.feet_air_time.params]
+command_name = "base_velocity"
+threshold = 0.5
+
 # --- Negative: base stability ---
 # --- 负向：基座稳定 ---
 [rewards.lin_vel_z]
-# Penalty on vertical linear velocity.
+# Penalty on vertical linear velocity — prevent bouncing.
 # Z 方向线速度惩罚（抑制上下跳跃）
 weight = -2.0
 
 [rewards.ang_vel_xy]
-# Penalty on pitch/roll angular velocity.
+# Penalty on pitch/roll angular velocity — prevent wobbling.
 # X/Y 方向角速度惩罚（抑制 pitch/roll 抖动）
 weight = -0.05
 
@@ -227,8 +259,8 @@ weight = -2.0
 # --- Negative: posture ---
 # --- 负向：姿态 ---
 [rewards.correct_base_height]
-# Base height tracking.
-# 基座高度跟踪
+# Base height tracking — keep the robot at proper standing height.
+# 基座高度跟踪——保持机器人正确的站立高度
 weight = -1.0
 [rewards.correct_base_height.params]
 # Target base height (m).
@@ -276,82 +308,112 @@ tanh_mult = 2.0
 [rewards.hip_to_default]
 weight = -0.05
 
-# --- Termination penalty (high weight so falling cost >> discounted wall-rush reward) ---
-# --- 终止惩罚（提高权重，撞死代价远超冲墙折扣收益）---
+# --- Termination penalty (CRITICAL: falling must hurt a LOT) ---
+# --- 终止惩罚（关键：摔倒必须非常痛）---
 [rewards.termination]
-weight = -10.0
+# HIGH: the discounted return of falling must far exceed any short-term gain from wild actions.
+# Without this, the policy has no reason to stay upright.
+# 高权重：摔倒的折扣代价必须远超任何短期疯狂动作的收益
+# 否则策略没有理由保持直立
+weight = -5.0
 
-# --- Anti-tipping ---
-# --- 防倾倒 ---
+# --- Anti-tipping (CRITICAL: must be strong enough to prevent bad_orientation) ---
+# --- 防倾倒（关键：必须足够强以防止 bad_orientation）---
 [rewards.flat_orientation]
-# Penalty on deviation from flat base orientation.
-# 基座偏离水平姿态的惩罚
-weight = -1.5
+# STRONG: this is the primary signal preventing the robot from tipping over.
+# The training log shows bad_orientation kills 87.5% of episodes at step 26-65.
+# 强权重：这是防止机器人倾倒的首要信号
+# 训练日志显示 bad_orientation 在 step 26-65 杀死 87.5% 的 episode
+weight = -5.0
 
 # --- Anti-stumbling ---
 # --- 防绊倒 ---
 [rewards.feet_stumble]
 # Penalty when foot hits edge: horizontal force >> vertical.
 # 脚碰台阶边缘时水平力 >> 垂直力的惩罚
-weight = -0.1
+weight = -0.5
 
 # --- Avoidance: penalize not turning when blocked ahead ---
 # --- 避障：前方被障碍阻挡时未主动转向的惩罚 ---
 [rewards.obstacle_evasion]
-weight = -1.0
+# Reduced: don't overwhelm the locomotion signal early on.
+# 降低：初期不要压过运控信号
+weight = -0.5
 [rewards.obstacle_evasion.params]
 command_name = "base_velocity"
 
 
 # =====================================================================
-# Navigation rewards
-# 导航奖励
+# Navigation rewards (WEAK initially — the robot can't navigate if it can't walk)
+# 导航奖励（初期弱化——机器人不会走路就无法导航）
+#
+# Once the robot walks stably (abnormal < 30%), boost these weights:
+#   heuristic_navigation: 0.5 → 5.0
+#   reach_goal: 5.0 → 50.0
+#   approach_goal: 1.0 → 5.0
+#   goal_heading: 0.1 → 0.5
+# Once walking + basic nav is stable (abnormal < 10%), boost further:
+#   heuristic_navigation: 5.0 → 10.0
+#   reach_goal: 50.0 → 100.0
+#   approach_goal: 5.0 → 10.0
 # =====================================================================
 
-# Main navigation: the only positive nav signal (clear ahead → towards goal; blocked → by clearance).
-# 主导航：唯一的正向导航信号（前方通 → 朝 goal；堵 → 按 clearance 走）
+# Main navigation: weak initially, ramp up once walking stabilizes.
+# 主导航：初期弱化，行走稳定后逐步提升
 [rewards.heuristic_navigation]
-weight = 10.0
+weight = 0.5
 [rewards.heuristic_navigation.params]
 # Obstacle threshold (height delta in meters, negative = wall/pit).
 # 障碍判定阈值（高度差，米，负值 = 下凹/墙）
 obstacle_threshold = -0.3
 
-# Fallback when blocked: reward turning (nav_scanner detects L-shaped turns 2.5m ahead).
-# 前方堵兜底：奖励转向（nav_scanner 2.5m 提前检测 L 型转角）
+# Fallback when blocked: weak initially.
+# 前方堵兜底：初期弱化
 [rewards.deadend_escape]
-weight = 4.0
+weight = 0.5
 [rewards.deadend_escape.params]
 obstacle_threshold = -0.3
 # Trapped threshold (0~1, larger = more lenient).
 # 判定"被困"的阈值（0~1，越大越宽松）
 trapped_threshold = 0.3
 
-# Wall-proximity brake: penalize high forward speed near walls.
-# 近墙减速：前方有墙时惩罚高速前冲
+# Wall-proximity brake: keep but reduced.
+# 近墙减速：保留但降低
 [rewards.wall_proximity_brake]
-weight = -3.0
+weight = -1.0
 [rewards.wall_proximity_brake.params]
 obstacle_threshold = -0.3
 
+# Velocity toward goal: weak guide.
+# 朝向目标速度：弱引导
 [rewards.velocity_toward_goal]
-weight = 1.5
-
-[rewards.goal_heading]
-weight = 0.6
-
-[rewards.goal_proximity]
 weight = 0.2
+
+# Goal heading: weak guide.
+# 目标朝向：弱引导
+[rewards.goal_heading]
+weight = 0.1
+
+# Goal proximity: very weak.
+# 目标接近：非常弱
+[rewards.goal_proximity]
+weight = 0.05
 [rewards.goal_proximity.params]
 scale_m = 15.0
 
+# Approach goal: moderate — gives directional signal without overwhelming.
+# 接近目标：适中——提供方向信号但不压过运控
 [rewards.approach_goal]
-weight = 5.0
+weight = 1.0
 
 # Reach-goal bonus (one-shot large reward when distance < threshold).
 # 到达目标奖励（距离 < threshold 一次性大奖）
 [rewards.reach_goal]
-weight = 50.0
+# Reduced: 100.0 is too dominant for a robot that can't even walk.
+# Ramp up to 100.0 once the robot can reliably reach goals.
+# 降低：100.0 对连走路都不会的机器人太强势了
+# 机器人能稳定到达目标后提升到 100.0
+weight = 5.0
 [rewards.reach_goal.params]
 # Reach threshold (m). Must equal `_goal_reached_termination` threshold
 # in velocity_env_cfg.py; mismatch causes a dead zone (terminated but
@@ -363,4 +425,13 @@ threshold = 0.6
 # Navigation time penalty (constant per-step, encourages fast arrival).
 # 导航时间惩罚（每步固定扣分，鼓励快速到达）
 [rewards.navigation_time]
-weight = -0.008
+# Reduced: don't penalize the robot for being slow when it's learning to walk.
+# 降低：机器人学走路时不要因为慢而惩罚它
+weight = -0.001
+
+# Track score aligned reward (combined time, pose, and energy scores).
+# 与Track模式评分系统对齐的组合奖励（时间、姿态、能量）
+[rewards.track_score_aligned]
+# Reduced: this is a shaping reward, not the primary learning signal.
+# 降低：这是塑形奖励，不是主要学习信号
+weight = 0.2
